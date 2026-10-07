@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches-ignore: [main] # main is tested by the Release workflow
   pull_request:
 
 jobs:
@@ -19,3 +20,11 @@ jobs:
         run: lua5.1 tests/integration.lua
       - name: Translations
         run: python3 tools/i18n.py check
+      - name: Build
+        id: build
+        run: echo "version=$(tools/build.sh)" >> "$GITHUB_OUTPUT"
+      - name: Upload plug-in
+        uses: actions/upload-artifact@v4
+        with:
+          name: FolderPublisher-${{ steps.build.outputs.version }}-${{ github.sha }}
+          path: dist/FolderPublisher.lrplugin.zip

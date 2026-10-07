@@ -1,25 +1,76 @@
+# Builds and tests every push to main. When the version in Info.lua has no
+# release yet, publishes one: tag vX.Y.Z, generated notes, and the plug-in zip.
+# Pushing a vX.Y.Z tag by hand works too, as long as it matches Info.lua.
 name: Release
 
 on:
   push:
+    branches: [main]
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags, for the "already released?" check
+
       - name: Install Lua 5.1
         run: sudo apt-get update && sudo apt-get install -y lua5.1
+
       - name: Test
-        run: lua5.1 tests/run.lua && lua5.1 tests/integration.lua && python3 tools/i18n.py check
-      - name: Package
-        run: zip -r FolderPublisher.lrplugin.zip FolderPublisher.lrplugin
+        run: |
+          for f in FolderPublisher.lrplugin/*.lua tests/*.lua; do luac5.1 -p "$f"; done
+          lua5.1 tests/run.lua
+          lua5.1 tests/integration.lua
+          python3 tools/i18n.py check
+
+      - name: Build
+        id: build
+        run: |
+          version=$(tools/build.sh)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether to release
+        id: decide
+        env:
+          TAG: ${{ steps.build.outputs.tag }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            if [ "$GITHUB_REF_NAME" != "$TAG" ]; then
+              echo "::error::Tag $GITHUB_REF_NAME does not match the version in Info.lua ($TAG)."
+              exit 1
+            fi
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          elif git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "$TAG is already released; bump VERSION in Info.lua to publish a new release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload plug-in
+        uses: actions/upload-artifact@v4
+        with:
+          name: FolderPublisher-${{ steps.build.outputs.version }}-${{ github.sha }}
+          path: dist/FolderPublisher.lrplugin.zip
+
       - name: Publish release
+        if: steps.decide.outputs.release == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          files: FolderPublisher.lrplugin.zip
+          tag_name: ${{ steps.build.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Folder Publisher ${{ steps.build.outputs.version }}
           generate_release_notes: true
+          files: dist/FolderPublisher.lrplugin.zip
