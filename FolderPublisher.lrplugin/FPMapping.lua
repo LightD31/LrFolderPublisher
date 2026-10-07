@@ -6,6 +6,7 @@ FPCore. Must be called from within an asynchronous task.
 
 local LrDate = import 'LrDate'
 local LrPathUtils = import 'LrPathUtils'
+local LrTasks = import 'LrTasks'
 
 local FPCore = require 'FPCore'
 local FPSettings = require 'FPSettings'
@@ -49,6 +50,17 @@ function FPMapping.collectionContext( collection, overrides )
 	}
 end
 
+--- Folder components of a photo after the service-level mapping
+-- (folder base, skipped leading folders, depth limit).
+function FPMapping.serviceFolders( path, settings, topFolders )
+	return FPCore.mirrorFolder(
+		LrPathUtils.parent( path ),
+		topFolders,
+		FPSettings.get( settings, 'fp_folderBase' ),
+		tonumber( settings.fp_skipLevels ) or 0,
+		tonumber( settings.fp_maxDepth ) or 0 )
+end
+
 local function dateParts( lrTime )
 	if not lrTime then
 		return nil
@@ -75,7 +87,7 @@ local function safeGetter( photo, method )
 	local cache = {}
 	return function( key )
 		if cache[ key ] == nil then
-			local ok, value = pcall( photo[ method ], photo, key )
+			local ok, value = LrTasks.pcall( photo[ method ], photo, key )
 			if not ok then
 				value = nil
 			end
@@ -107,12 +119,7 @@ function FPMapping.targetStem( photo, settings, colCtx, topFolders, renderedPath
 	local path = photo:getRawMetadata( 'path' )
 	local colSettings = colCtx.settings
 
-	local mirrored = FPCore.mirrorFolder(
-		LrPathUtils.parent( path ),
-		topFolders,
-		settings.fp_folderBase or 'lrRoot',
-		( tonumber( settings.fp_skipLevels ) or 0 ) + ( tonumber( colSettings.extraSkipLevels ) or 0 ),
-		tonumber( settings.fp_maxDepth ) or 0 )
+	local mirrored = FPMapping.serviceFolders( path, settings, topFolders )
 
 	local isVirtualCopy = photo:getRawMetadata( 'isVirtualCopy' )
 	local copyName = isVirtualCopy and photo:getFormattedMetadata( 'copyName' ) or nil
@@ -134,8 +141,9 @@ function FPMapping.targetStem( photo, settings, colCtx, topFolders, renderedPath
 	}
 
 	local subfolder, unknownSub = FPCore.expandTemplate( colSettings.subfolder or '', ctx )
+	local append, unknownAppend = FPCore.expandTemplate( colSettings.append or '', ctx )
 
-	local mode = settings.fp_fileNaming or 'library'
+	local mode = FPSettings.get( settings, 'fp_fileNaming' )
 	local name, unknownName
 	local nameKnown = true
 	if mode == 'template' then
@@ -155,7 +163,7 @@ function FPMapping.targetStem( photo, settings, colCtx, topFolders, renderedPath
 		name = name .. ' (' .. copyName .. ')'
 	end
 
-	for _, list in ipairs { unknownSub or {}, unknownName or {} } do
+	for _, list in ipairs { unknownSub or {}, unknownAppend or {}, unknownName or {} } do
 		for _, token in ipairs( list ) do
 			if not warnedTemplates[ token ] then
 				warnedTemplates[ token ] = true
@@ -164,14 +172,15 @@ function FPMapping.targetStem( photo, settings, colCtx, topFolders, renderedPath
 		end
 	end
 
-	local folders = mirrored
-	if colSettings.structure == 'flatten' then
-		folders = {}
+	local folders = {}
+	if colSettings.structure ~= 'flatten' then
+		folders = FPCore.stripComponents( mirrored, colSettings.extraSkipLevels, colSettings.trailingSkipLevels )
 	end
 
 	local stem = FPCore.buildRelativePath {
 		subfolder = subfolder,
 		folders = folders,
+		append = append,
 		name = name,
 	}
 	return stem, nameKnown
@@ -190,6 +199,49 @@ function FPMapping.guessExtension( settings, photo )
 		return ext and string.lower( ext ) or ''
 	end
 	return FORMAT_EXTENSIONS[ format ] or string.lower( format )
+end
+
+--- Text for the live examples in the settings dialogs: where `photo` would
+-- be published. Returns two strings: source path and destination path.
+function FPMapping.example( photo, settings, colCtx, catalog, serviceName )
+	local source = photo:getRawMetadata( 'path' )
+	local stem, nameKnown = FPMapping.targetStem( photo, settings, colCtx,
+		FPMapping.topFolders( catalog ), nil, serviceName )
+	local ext = FPMapping.guessExtension( settings, photo )
+	local rel = stem .. ( ext ~= '' and ( '.' .. ext ) or '' )
+	local root = FPCore.trim( tostring( settings.fp_root or '' ) )
+	if root == '' then
+		root = '<root>'
+	end
+	local dest = root
+	for part in rel:gmatch( '[^/]+' ) do
+		dest = LrPathUtils.child( dest, part )
+	end
+	if not nameKnown then
+		dest = dest .. '  (name from File Naming)'
+	end
+	return source, dest
+end
+
+--- Picks a photo to show in examples: one from the collection, else the
+-- selected photo, else any photo of the first top-level folder.
+function FPMapping.examplePhoto( catalog, collection )
+	if collection then
+		local ok, photos = LrTasks.pcall( collection.getPhotos, collection )
+		if ok and photos and photos[1] then
+			return photos[1]
+		end
+	end
+	local photo = catalog:getTargetPhoto()
+	if photo then
+		return photo
+	end
+	for _, folder in ipairs( catalog:getFolders() ) do
+		local photos = folder:getPhotos( false )
+		if photos[1] then
+			return photos[1]
+		end
+	end
 end
 
 --------------------------------------------------------------------------------
