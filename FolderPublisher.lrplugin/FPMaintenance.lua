@@ -4,7 +4,8 @@ Maintenance commands (Library > Plug-in Extras):
   * find photos whose published file is missing, or whose target path
     changed (photo renamed or moved in Lightroom, settings changed), and mark
     them for republishing;
-  * find files in the publish tree that no published photo refers to.
+  * find files in the publish tree that no published photo refers to;
+  * check, then publish every collection of a service in one go.
 ------------------------------------------------------------------------------]]
 
 local LrApplication = import 'LrApplication'
@@ -20,7 +21,12 @@ local LrView = import 'LrView'
 local FPCore = require 'FPCore'
 local FPFiles = require 'FPFiles'
 local FPMapping = require 'FPMapping'
+local FPSettings = require 'FPSettings'
+local FPSummary = require 'FPSummary'
+local FPText = require 'FPText'
 local logger = require 'FPLog'
+
+local T = FPText.T
 
 local FPMaintenance = {}
 
@@ -35,7 +41,8 @@ function FPMaintenance.chooseService( actionTitle )
 	local catalog = LrApplication.activeCatalog()
 	local services = catalog:getPublishServices( _PLUGIN.id )
 	if #services == 0 then
-		LrDialogs.message( PLUGIN_TITLE, 'There is no Folder Publisher publish service in this catalog yet.', 'info' )
+		LrDialogs.message( PLUGIN_TITLE, T( 'Maint/NoService',
+			'There is no Folder Publisher publish service in this catalog yet.' ), 'info' )
 		return nil
 	end
 	if #services == 1 then
@@ -55,7 +62,7 @@ function FPMaintenance.chooseService( actionTitle )
 			title = actionTitle,
 			contents = f:row {
 				bind_to_object = props,
-				f:static_text { title = 'Publish service:' },
+				f:static_text { title = T( 'Maint/ServiceLabel', 'Publish service:' ) },
 				f:popup_menu { value = LrView.bind 'index', items = items },
 			},
 		}
@@ -143,7 +150,7 @@ local function markForRepublish( publishedPhotos )
 	if #toMark == 0 then
 		return 0
 	end
-	LrApplication.activeCatalog():withWriteAccessDo( 'Mark Photos to Republish', function()
+	LrApplication.activeCatalog():withWriteAccessDo( T( 'Maint/MarkUndo', 'Mark Photos to Republish' ), function()
 		for _, pp in ipairs( toMark ) do
 			pp:setEditedFlag( true )
 		end
@@ -165,20 +172,21 @@ function FPMaintenance.recheckCollection( service, collection, overrides )
 	return n, root
 end
 
---- Menu command: checks every collection of a service.
-function FPMaintenance.checkService( service )
-	local root, settings, wantedRoot = rootOf( service )
-	if not root then
-		LrDialogs.message( PLUGIN_TITLE,
-			'The publish root folder was not found:\n' .. tostring( wantedRoot )
-				.. '\n\nConnect the drive or fix the root folder in the publish service settings.',
-			'warning' )
-		return
-	end
+local function rootMissing( wantedRoot )
+	LrDialogs.message( PLUGIN_TITLE,
+		T( 'Maint/RootMissing', 'The publish folder was not found:\n^1\n\nConnect the drive, or fix the '
+			.. 'folder in the publish service settings.', tostring( wantedRoot ) ),
+		'warning' )
+end
 
+--- Finds the published photos of a service that were renamed or moved, or
+-- whose file is missing. Returns moved, missing, canceled.
+local function scanService( service, root, settings )
 	local catalog = LrApplication.activeCatalog()
 	local topFolders = FPMapping.topFolders( catalog )
-	local progress = LrProgressScope { title = 'Checking published photos of "' .. service:getName() .. '"' }
+	local progress = LrProgressScope {
+		title = T( 'Maint/CheckProgress', 'Checking published photos of "^1"', service:getName() ),
+	}
 
 	local collections = {}
 	FPMapping.eachCollection( service, function( c ) collections[ #collections + 1 ] = c end )
@@ -195,23 +203,83 @@ function FPMaintenance.checkService( service )
 	end
 	local canceled = progress:isCanceled()
 	progress:done()
-	if canceled then
+	return moved, missing, canceled, collections
+end
+
+local function concat( a, b )
+	local out = {}
+	for _, x in ipairs( a ) do out[ #out + 1 ] = x end
+	for _, x in ipairs( b ) do out[ #out + 1 ] = x end
+	return out
+end
+
+--- Menu command: checks every collection of a service.
+function FPMaintenance.checkService( service )
+	local root, settings, wantedRoot = rootOf( service )
+	if not root then
+		rootMissing( wantedRoot )
 		return
 	end
 
-	local all = {}
-	for _, pp in ipairs( moved ) do all[ #all + 1 ] = pp end
-	for _, pp in ipairs( missing ) do all[ #all + 1 ] = pp end
+	local moved, missing, canceled = scanService( service, root, settings )
+	if canceled then
+		return
+	end
+	local all = concat( moved, missing )
 	local marked = markForRepublish( all )
 
 	if #all == 0 then
-		LrDialogs.message( PLUGIN_TITLE, 'All published files are where they should be.', 'info' )
+		LrDialogs.message( PLUGIN_TITLE, T( 'Maint/AllGood', 'All published files are where they should be.' ), 'info' )
 	else
-		LrDialogs.message( PLUGIN_TITLE, string.format(
-			'%d photo(s) were renamed, moved or now map to a different path.\n'
-				.. '%d published file(s) are missing on disk.\n\n'
-				.. '%d photo(s) were marked for republishing. Publish the service to update the folder.',
-			#moved, #missing, marked ), 'info' )
+		LrDialogs.message( PLUGIN_TITLE,
+			FPText.count( #moved, 'Maint/Moved', '1 photo was renamed, moved or now maps to a different path.',
+				'^1 photos were renamed, moved or now map to a different path.' ) .. '\n'
+			.. FPText.count( #missing, 'Maint/Missing', '1 published file is missing on disk.',
+				'^1 published files are missing on disk.' ) .. '\n\n'
+			.. FPText.count( marked, 'Maint/Marked',
+				'1 photo was marked for republishing. Publish the service to update the folder.',
+				'^1 photos were marked for republishing. Publish the service to update the folder.' ),
+			'info' )
+	end
+end
+
+--- Menu command: finds renamed, moved and missing photos, then publishes
+-- every collection of the service, one after the other, with one summary.
+function FPMaintenance.checkAndPublish( service )
+	local root, settings, wantedRoot = rootOf( service )
+	if not root then
+		rootMissing( wantedRoot )
+		return
+	end
+
+	local moved, missing, canceled, collections = scanService( service, root, settings )
+	if canceled then
+		return
+	end
+	markForRepublish( concat( moved, missing ) )
+
+	local progress = LrProgressScope {
+		title = T( 'Maint/PublishProgress', 'Publishing "^1"', service:getName() ),
+	}
+	FPSummary.beginBatch { flagged = #moved, missing = #missing }
+	local ok, err = LrTasks.pcall( function()
+		for i, collection in ipairs( collections ) do
+			if progress:isCanceled() then
+				break
+			end
+			progress:setCaption( collection:getName() )
+			local done = false
+			collection:publishNow( function() done = true end )
+			while not done do
+				LrTasks.sleep( 0.5 )
+			end
+			progress:setPortionComplete( i, #collections )
+		end
+	end )
+	progress:done()
+	FPSummary.endBatch( service:getName(), FPSettings.get( settings, 'fp_showSummary' ) )
+	if not ok then
+		error( err, 0 )
 	end
 end
 
@@ -223,11 +291,13 @@ end
 function FPMaintenance.cleanOrphans( service )
 	local root, _, wantedRoot = rootOf( service )
 	if not root then
-		LrDialogs.message( PLUGIN_TITLE, 'The publish root folder was not found:\n' .. tostring( wantedRoot ), 'warning' )
+		rootMissing( wantedRoot )
 		return
 	end
 
-	local progress = LrProgressScope { title = 'Looking for orphaned files in "' .. service:getName() .. '"' }
+	local progress = LrProgressScope {
+		title = T( 'Maint/OrphanProgress', 'Looking for orphaned files in "^1"', service:getName() ),
+	}
 
 	local known, knownStems = {}, {}
 	FPMapping.eachCollection( service, function( collection )
@@ -263,7 +333,7 @@ function FPMaintenance.cleanOrphans( service )
 	end
 
 	if #orphans == 0 then
-		LrDialogs.message( PLUGIN_TITLE, 'No orphaned files were found in\n' .. root, 'info' )
+		LrDialogs.message( PLUGIN_TITLE, T( 'Maint/NoOrphans', 'No orphaned files were found in\n^1', root ), 'info' )
 		return
 	end
 
@@ -272,12 +342,14 @@ function FPMaintenance.cleanOrphans( service )
 		shown[i] = '  ' .. table.concat( FPCore.componentsBelow( orphans[i], root ), '/' )
 	end
 	local answer = LrDialogs.confirm(
-		string.format( '%d file(s) in the publish folder are not used by any published photo', #orphans ),
-		table.concat( shown, '\n' ) .. ( #orphans > 15 and '\n  …' or '' )
-			.. '\n\nThey may be left over from earlier publishes, or files you put there yourself.',
-		MAC_ENV and 'Move to Trash' or 'Move to Recycle Bin',
-		'Cancel',
-		'Delete' )
+		FPText.count( #orphans, 'Maint/OrphansFound',
+			'1 file in the publish folder is not used by any published photo',
+			'^1 files in the publish folder are not used by any published photo' ),
+		table.concat( shown, '\n' ) .. ( #orphans > 15 and '\n  …' or '' ) .. '\n\n'
+			.. T( 'Maint/OrphansWhy', 'They may be left over from earlier publishes, or files you put there yourself.' ),
+		MAC_ENV and T( 'Common/MoveToTrash', 'Move to Trash' ) or T( 'Common/MoveToRecycleBin', 'Move to Recycle Bin' ),
+		T( 'Common/Cancel', 'Cancel' ),
+		T( 'Common/Delete', 'Delete' ) )
 	if answer == 'cancel' then
 		return
 	end
@@ -296,8 +368,12 @@ function FPMaintenance.cleanOrphans( service )
 		FPFiles.pruneEmptyFolders( dir, root )
 	end
 
-	LrDialogs.message( PLUGIN_TITLE, string.format( '%d file(s) removed.%s', #orphans - failed,
-		failed > 0 and string.format( ' %d could not be removed (see the log).', failed ) or '' ), 'info' )
+	local text = FPText.count( #orphans - failed, 'Maint/OrphansRemoved', '1 file removed.', '^1 files removed.' )
+	if failed > 0 then
+		text = text .. ' ' .. FPText.count( failed, 'Maint/OrphansFailed', '1 could not be removed (see the log).',
+			'^1 could not be removed (see the log).' )
+	end
+	LrDialogs.message( PLUGIN_TITLE, text, 'info' )
 end
 
 return FPMaintenance

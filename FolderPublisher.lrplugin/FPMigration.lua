@@ -23,11 +23,14 @@ local FPCore = require 'FPCore'
 local FPFiles = require 'FPFiles'
 local FPMapping = require 'FPMapping'
 local FPSettings = require 'FPSettings'
+local FPText = require 'FPText'
 local logger = require 'FPLog'
+
+local T = FPText.T
 
 local FPMigration = {}
 
-local TITLE = 'Import from Another Publish Service'
+local TITLE = T( 'Import/Title', 'Import from Another Publish Service' )
 local SAMPLE_SIZE = 200
 
 --------------------------------------------------------------------------------
@@ -51,14 +54,15 @@ local function chooseServices( catalog )
 	end
 
 	if #others == 0 then
-		LrDialogs.message( TITLE, 'There is no other publish service in this catalog to import.', 'info' )
+		LrDialogs.message( TITLE, T( 'Import/NoSource', 'There is no other publish service in this catalog to import.' ),
+			'info' )
 		return nil
 	end
 	if #mine == 0 then
 		LrDialogs.message( TITLE,
-			'Create a Folder Publisher service first.\n\n'
-				.. 'In the Publish Services panel, click "Set Up…" next to Folder Publisher, choose the '
-				.. 'SAME folder as the service you are importing, then run this command again.',
+			T( 'Import/NoDest', 'Create a Folder Publisher service first.\n\nIn the Publish Services panel, '
+				.. 'click "Set Up…" next to Folder Publisher, choose the SAME folder as the service you are '
+				.. 'importing, then run this command again.' ),
 			'info' )
 		return nil
 	end
@@ -90,23 +94,23 @@ local function chooseServices( catalog )
 		local labelWidth = LrView.share 'importLabel'
 		local result = LrDialogs.presentModalDialog {
 			title = TITLE,
-			actionVerb = 'Continue',
+			actionVerb = T( 'Common/Continue', 'Continue' ),
 			contents = f:column {
 				bind_to_object = props,
 				spacing = f:control_spacing(),
 				f:static_text {
-					title = 'Copies the collections and smart collections of another publish service into a\n'
-						.. 'Folder Publisher service. Photos whose files are already in the destination\n'
-						.. 'folder are marked as published, so nothing needs to be exported again.\n'
-						.. 'The other service is not changed.',
+					title = T( 'Import/Intro', 'Copies the collections and smart collections of another publish '
+						.. 'service into a\nFolder Publisher service. Photos whose files are already in the '
+						.. 'destination\nfolder are marked as published, so nothing needs to be exported again.\n'
+						.. 'The other service is not changed.' ),
 					height_in_lines = 4,
 				},
 				f:row {
-					f:static_text { title = 'Import from:', alignment = 'right', width = labelWidth },
+					f:static_text { title = T( 'Import/From', 'Import from:' ), alignment = 'right', width = labelWidth },
 					f:popup_menu { value = LrView.bind 'source', items = sourceItems },
 				},
 				f:row {
-					f:static_text { title = 'Into:', alignment = 'right', width = labelWidth },
+					f:static_text { title = T( 'Import/Into', 'Into:' ), alignment = 'right', width = labelWidth },
 					f:popup_menu { value = LrView.bind 'destination', items = destItems },
 				},
 			},
@@ -346,7 +350,7 @@ local function createTree( service, node, parent, defaultCollection, stats )
 		if targetSet then
 			createTree( service, set, targetSet, defaultCollection, stats )
 		else
-			stats.failedCollections[ #stats.failedCollections + 1 ] = set.name .. ' (set)'
+			stats.failedCollections[ #stats.failedCollections + 1 ] = T( 'Import/SetSuffix', '^1 (set)', set.name )
 		end
 	end
 end
@@ -364,13 +368,13 @@ function FPMigration.run()
 	local destSettings = destination:getPublishSettings() or {}
 	local destRoot = FPFiles.expandRoot( destSettings.fp_root )
 	if destRoot == '' or not FPFiles.isDirectory( destRoot ) then
-		LrDialogs.message( TITLE, 'The folder of "' .. destination:getName() .. '" was not found:\n'
-			.. tostring( destRoot ), 'warning' )
+		LrDialogs.message( TITLE, T( 'Import/DestMissing', 'The folder of "^1" was not found:\n^2',
+			destination:getName(), tostring( destRoot ) ), 'warning' )
 		return
 	end
 
 	-- 1. Read the source service.
-	local progress = LrProgressScope { title = 'Reading "' .. source:getName() .. '"' }
+	local progress = LrProgressScope { title = T( 'Import/Reading', 'Reading "^1"', source:getName() ) }
 	local roots = candidateRoots( source:getPublishSettings() )
 	local tree = readTree( source, roots, destRoot, progress )
 	local canceled = progress:isCanceled()
@@ -402,10 +406,11 @@ function FPMigration.run()
 
 	if nPhotos > 0 and nFound == 0 then
 		LrDialogs.message( TITLE,
-			'None of the published files of "' .. source:getName() .. '" are inside\n' .. destRoot
-				.. ( example and ( '\n\nFor example, one is at:\n' .. example
-					.. '\n\nPoint "' .. destination:getName() .. '" at the same folder and try again.' )
-					or '\n\nTheir location could not be determined.' ),
+			T( 'Import/NoneInside', 'None of the published files of "^1" are inside\n^2', source:getName(), destRoot )
+				.. '\n\n' .. ( example
+					and T( 'Import/NoneInsideExample', 'For example, one is at:\n^1\n\nPoint "^2" at the same '
+						.. 'folder and try again.', example, destination:getName() )
+					or T( 'Import/NoneInsideUnknown', 'Their location could not be determined.' ) ),
 			'warning' )
 		return
 	end
@@ -416,31 +421,33 @@ function FPMigration.run()
 		local s = entry.settings
 		local layout
 		if s.structure == 'flatten' then
-			layout = 'flat'
+			layout = T( 'Import/LayoutFlat', 'flat' )
 		else
-			layout = string.format( 'strip %d leading / %d trailing', s.extraSkipLevels, s.trailingSkipLevels )
+			layout = T( 'Import/LayoutStrip', 'strip ^1 leading / ^2 trailing', s.extraSkipLevels, s.trailingSkipLevels )
 		end
 		if s.subfolder ~= '' then
-			layout = layout .. ', before: "' .. s.subfolder .. '"'
+			layout = layout .. T( 'Import/LayoutBefore', ', before: "^1"', s.subfolder )
 		end
 		if s.append ~= '' then
-			layout = layout .. ', after: "' .. s.append .. '"'
+			layout = layout .. T( 'Import/LayoutAfter', ', after: "^1"', s.append )
 		end
-		lines[ #lines + 1 ] = string.format( '• %s%s: %d photos, %d/%d at the expected path (%s)',
-			entry.name, entry.isSmart and ' (smart)' or '', #entry.photos, entry.exact, entry.found, layout )
+		lines[ #lines + 1 ] = '• ' .. T( 'Import/Line', '^1^2: ^3 photos, ^4/^5 at the expected path (^6)',
+			entry.name, entry.isSmart and T( 'Import/Smart', ' (smart)' ) or '', #entry.photos, entry.exact,
+			entry.found, layout )
 	end )
 	local shown = table.concat( lines, '\n', 1, math.min( #lines, 12 ) ) .. ( #lines > 12 and '\n…' or '' )
 
 	local answer = LrDialogs.confirm(
-		string.format( 'Import %d collection(s) and %d photo(s) into "%s"?', nCollections, nPhotos, serviceName ),
-		string.format( '%d file(s) found in the folder will be marked as published.\n', nFound )
-			.. ( nOutside + nMissing > 0 and string.format(
-				'%d photo(s) have no file there yet and will be published normally.\n', nOutside + nMissing ) or '' )
-			.. '\n' .. shown
-			.. '\n\nPhotos not "at the expected path" keep their current file until they are next '
-			.. 'republished. If many are listed, check the File Names settings of the new service '
-			.. 'first (for example, use Lightroom\'s File Naming if the old service renamed files).',
-		'Import', 'Cancel' )
+		T( 'Import/Confirm', 'Import ^1 collection(s) and ^2 photo(s) into "^3"?', nCollections, nPhotos, serviceName ),
+		T( 'Import/ConfirmFound', '^1 file(s) found in the folder will be marked as published.', nFound ) .. '\n'
+			.. ( nOutside + nMissing > 0 and ( T( 'Import/ConfirmNoFile',
+				'^1 photo(s) have no file there yet and will be published normally.', nOutside + nMissing ) .. '\n' )
+				or '' )
+			.. '\n' .. shown .. '\n\n'
+			.. T( 'Import/ConfirmNote', 'Photos not "at the expected path" keep their current file until they are '
+				.. 'next republished. If many are listed, check the File Names settings of the new service first '
+				.. '(for example, use Lightroom\'s File Naming if the old service renamed files).' ),
+		T( 'Import/Button', 'Import' ), T( 'Common/Cancel', 'Cancel' ) )
 	if answer ~= 'ok' then
 		return
 	end
@@ -448,7 +455,7 @@ function FPMigration.run()
 	-- 3. Create collections; regular ones get their photos right away.
 	local stats = { collections = 0, failedCollections = {} }
 	local defaultCollection = findDefaultCollection( destination )
-	catalog:withWriteAccessDo( 'Import Publish Service', function()
+	catalog:withWriteAccessDo( T( 'Import/Undo', 'Import Publish Service' ), function()
 		createTree( destination, tree, nil, defaultCollection, stats )
 	end, { timeout = 120 } )
 
@@ -462,7 +469,7 @@ function FPMigration.run()
 	end )
 	local notInSmart = 0
 	if smartPending then
-		catalog:withWriteAccessDo( 'Import Publish Service: Smart Collections', function()
+		catalog:withWriteAccessDo( T( 'Import/Undo', 'Import Publish Service' ), function()
 			eachEntry( tree, function( entry )
 				if entry.isSmart and entry.target then
 					for _, p in ipairs( entry.photos ) do
@@ -501,7 +508,7 @@ function FPMigration.run()
 		end
 	end )
 	if #toFlag > 0 then
-		catalog:withWriteAccessDo( 'Import Publish Service: Modified Photos', function()
+		catalog:withWriteAccessDo( T( 'Import/Undo', 'Import Publish Service' ), function()
 			for _, published in ipairs( toFlag ) do
 				published:setEditedFlag( true )
 			end
@@ -520,19 +527,24 @@ function FPMigration.run()
 	logger:info( string.format( 'Imported "%s" into "%s": %d collections, %d photos marked published',
 		source:getName(), serviceName, stats.collections, marked ) )
 
-	LrDialogs.message( 'Import finished', string.format(
-		'%d collection(s) created in "%s".\n%d photo(s) marked as already published.%s%s\n\n'
-			.. 'Check the new service, then publish it once: only new and modified photos are exported.\n\n'
-			.. 'When you are happy with it, disable the old plug-in in the Plug-in Manager or delete the old '
-			.. 'service. Do not remove photos or collections from the old service first: that would delete '
-			.. 'the published files.',
-		stats.collections, serviceName, marked,
-		#toFlag > 0 and string.format( '\n%d of them were already waiting to be republished.', #toFlag ) or '',
-		#stats.failedCollections > 0 and ( '\nNot created (name already used by a set or collection): '
-			.. table.concat( stats.failedCollections, ', ' ) ) or '' )
-		.. ( notInSmart > 0 and string.format( '\n\n%d photo(s) were not (yet) in their smart collection; '
-			.. 'they will be published normally.', notInSmart ) or '' ),
-		'info' )
+	local text = T( 'Import/DoneCreated', '^1 collection(s) created in "^2".', stats.collections, serviceName )
+		.. '\n' .. T( 'Import/DoneMarked', '^1 photo(s) marked as already published.', marked )
+	if #toFlag > 0 then
+		text = text .. '\n' .. T( 'Import/DoneFlagged', '^1 of them were already waiting to be republished.', #toFlag )
+	end
+	if #stats.failedCollections > 0 then
+		text = text .. '\n' .. T( 'Import/DoneFailed', 'Not created (name already used by a set or collection): ^1',
+			table.concat( stats.failedCollections, ', ' ) )
+	end
+	if notInSmart > 0 then
+		text = text .. '\n\n' .. T( 'Import/DoneNotInSmart',
+			'^1 photo(s) were not (yet) in their smart collection; they will be published normally.', notInSmart )
+	end
+	text = text .. '\n\n' .. T( 'Import/DoneNext', 'Check the new service, then publish it once: only new and '
+		.. 'modified photos are exported.\n\nWhen you are happy with it, disable the old plug-in in the Plug-in '
+		.. 'Manager or delete the old service. Do not remove photos or collections from the old service first: '
+		.. 'that would delete the published files.' )
+	LrDialogs.message( T( 'Import/DoneTitle', 'Import finished' ), text, 'info' )
 end
 
 return FPMigration

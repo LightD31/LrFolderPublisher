@@ -66,6 +66,13 @@ and is not affiliated with its author.
   too.
 - **Import from Jeffrey Friedl's plug-in** (or another folder publisher):
   see [Switching from jf Folder Publisher](#switching-from-jf-folder-publisher).
+- **Check & Publish** (*Library ▸ Plug-in Extras*): finds photos you renamed
+  or moved in Lightroom, or whose file went missing, then publishes every
+  collection of the service, with one summary at the end.
+- **Publish summary:** after each publish, the counts of new, updated, moved
+  and removed photos, plus anything that failed or was skipped. Show it
+  always, only when something needs attention, or never.
+- **English and French.** The interface follows Lightroom's language.
 - **Maintenance tools** (*Library ▸ Plug-in Extras*, and buttons in the
   service settings):
   - **Find Moved, Renamed or Missing Photos…** marks for republishing every
@@ -207,6 +214,18 @@ New compared to the original:
 - tokens in the per-collection path options;
 - no registration.
 
+## Translations
+
+All text goes through `T( 'Key', 'English text' )` (see `FPText.lua`).
+Translations live in `FolderPublisher.lrplugin/TranslatedStrings_<language>.txt`,
+one `"$$$/FolderPublisher/Key=Text"` per line, with `^1`… for values and `^n`
+for line breaks.
+
+```sh
+python3 tools/i18n.py check          # every string translated, placeholders match
+python3 tools/i18n.py template de    # skeleton for a new language
+```
+
 ## Troubleshooting
 
 - Logs are written to `FolderPublisher.log` in Lightroom's log folder
@@ -233,6 +252,9 @@ FolderPublisher.lrplugin/
   FPMaintenance.lua                 Plug-in Extras commands
   FPMigration.lua                   import from another publish service
   FPSettings.lua                    settings and defaults
+  FPSummary.lua                     publish summaries
+  FPText.lua                        localisation helper
+  TranslatedStrings_fr.txt          French
 tests/
   run.lua                           unit tests for FPCore
   integration.lua                   end-to-end tests against a stubbed SDK
@@ -246,8 +268,8 @@ lua5.1 tests/run.lua
 lua5.1 tests/integration.lua
 ```
 
-The stub is not a real Lightroom. Check changes to SDK-facing code in
-Lightroom Classic before releasing.
+The stub is not a real Lightroom. Before releasing, go through
+[TESTING.md](TESTING.md) in Lightroom Classic.
 
 To release, push a tag such as `v1.0.0`. GitHub Actions attaches
 `FolderPublisher.lrplugin.zip` to a release.

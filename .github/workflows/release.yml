@@ -15,7 +15,7 @@ jobs:
       - name: Install Lua 5.1
         run: sudo apt-get update && sudo apt-get install -y lua5.1
       - name: Test
-        run: lua5.1 tests/run.lua && lua5.1 tests/integration.lua
+        run: lua5.1 tests/run.lua && lua5.1 tests/integration.lua && python3 tools/i18n.py check
       - name: Package
         run: zip -r FolderPublisher.lrplugin.zip FolderPublisher.lrplugin
       - name: Publish release

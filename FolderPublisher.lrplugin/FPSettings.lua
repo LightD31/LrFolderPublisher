@@ -54,6 +54,7 @@ FPSettings.exportPresetFields = {
 	{ key = 'fp_onCatalogDelete', default = 'remove' }, -- remove | keep | block
 	{ key = 'fp_pruneEmptyFolders', default = true },
 	{ key = 'fp_fileDate', default = 'export' },        -- export | capture
+	{ key = 'fp_showSummary', default = 'always' },     -- always | problems | never
 }
 
 for _, trigger in ipairs( FPSettings.republishTriggers ) do

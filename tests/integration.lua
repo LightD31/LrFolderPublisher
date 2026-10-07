@@ -66,6 +66,12 @@ local function setup( settingsOverrides, collectionSpecs )
 	if not ( settingsOverrides and settingsOverrides.fp_folderBase ) then
 		settings.fp_folderBase = 'lrRoot'
 	end
+	-- Summaries are tested on their own.
+	if not ( settingsOverrides and settingsOverrides.fp_showSummary ) then
+		settings.fp_showSummary = 'never'
+	end
+	stub.prefs = {}
+	stub.loadLanguage( nil )
 	settings.fp_root = stub.root
 	local collections = {}
 	for i, spec in ipairs( collectionSpecs or { { name = 'Mirrored Photos' } } ) do
@@ -90,6 +96,7 @@ local function test( name, fn )
 end
 
 provider = require 'FolderPublishServiceProvider'
+stub.provider = provider
 local FPMaintenance = require 'FPMaintenance'
 
 --------------------------------------------------------------------------------
@@ -336,8 +343,8 @@ test( 'maintenance: detects moved, renamed and missing photos', function()
 	stub.run( 'rm ' .. stub.shq( stub.root .. '/Photos/x/IMG_1-2.jpg' ) ) -- deleted on disk
 	stub.messages = {}
 	FPMaintenance.checkService( service )
-	check( stub.messages[1].text:match( '^1 photo%(s%) were renamed' ), stub.messages[1].text )
-	check( stub.messages[1].text:match( '1 published file%(s%) are missing' ), stub.messages[1].text )
+	check( stub.messages[1].text:match( '^1 photo was renamed' ), stub.messages[1].text )
+	check( stub.messages[1].text:match( '1 published file is missing' ), stub.messages[1].text )
 	eq( cols[1]:entryFor( a ).edited, false )
 	eq( cols[1]:entryFor( b ).edited, true )
 	eq( cols[1]:entryFor( c ).edited, true )
@@ -447,7 +454,7 @@ test( 'dialogs build, with live examples', function()
 end )
 
 test( 'offline originals are skipped, not rendered', function()
-	local service, cols = setup()
+	local service, cols = setup { fp_showSummary = 'problems' }
 	local a = stub.newPhoto( 1, LIB .. '/a.CR3' )
 	local b = stub.newPhoto( 2, LIB .. '/b.CR3' )
 	stub.run( 'rm ' .. stub.shq( b.raw.path ) )
@@ -455,7 +462,96 @@ test( 'offline originals are skipped, not rendered', function()
 	eq( treeOf(), 'Photos/a.jpg' )
 	eq( cols[1]:entryFor( b ).remoteId, nil, 'b stays unpublished' )
 	eq( #stub.messages, 1 )
-	check( stub.messages[1].title:match( '^1 photo' ), stub.messages[1].title )
+	check( stub.messages[1].text:match( '1 photo skipped: original offline' ), stub.messages[1].text )
+	check( stub.messages[1].text:match( 'b%.CR3' ), 'offline path listed' )
+	eq( stub.messages[1].kind, 'warning' )
+end )
+
+test( 'publish summary', function()
+	local service, cols = setup { fp_showSummary = 'always' }
+	local a = stub.newPhoto( 1, LIB .. '/a.CR3' )
+	local b = stub.newPhoto( 2, LIB .. '/b.CR3' )
+	stub.publish( provider, service, cols[1], { a, b } )
+	eq( #stub.messages, 1 )
+	eq( stub.messages[1].title, 'Published "Mirrored Photos"' )
+	eq( stub.messages[1].text, '2 new photos published' )
+
+	-- Lightroom removes first (deleteFirstOnPublish), then renders.
+	eq( provider.deleteFirstOnPublish(), true )
+	stub.messages = {}
+	cols[1]:removeRemoteId( 'Photos/b.jpg' )
+	provider.deletePhotosFromPublishedCollection( service.settings, { 'Photos/b.jpg' }, function() end, 1 )
+	stub.setPath( a, LIB .. '/moved/a.CR3' )
+	stub.publish( provider, service, cols[1], { a } )
+	eq( stub.messages[1].text, '1 photo moved or renamed\n1 file removed' )
+
+	-- an old removal is not attributed to a later publish
+	provider.deletePhotosFromPublishedCollection( service.settings, { 'Photos/moved/a.jpg' }, function() end, 1 )
+	stub.clockOffset = 3600
+	stub.messages = {}
+	stub.publish( provider, service, cols[1], { a } )
+	stub.clockOffset = nil
+	eq( stub.messages[1].text, '1 photo updated' )
+
+	-- "only when something needs attention"
+	service.settings.fp_showSummary = 'problems'
+	stub.messages = {}
+	stub.publish( provider, service, cols[1], { a } )
+	eq( #stub.messages, 0 )
+end )
+
+test( 'check & publish', function()
+	local service, cols = setup( { fp_showSummary = 'always' }, { { name = 'A' }, { name = 'B' } } )
+	local a = stub.newPhoto( 1, LIB .. '/a.CR3' )
+	local b = stub.newPhoto( 2, LIB .. '/b.CR3' )
+	local c = stub.newPhoto( 3, LIB .. '/c.CR3' )
+	stub.publish( provider, service, cols[1], { a, b } )
+	cols[2]:add( c ) -- new, not yet published
+	stub.setPath( a, LIB .. '/renamed/a2.CR3' ) -- Lightroom doesn't flag this
+	stub.run( 'rm ' .. stub.shq( stub.root .. '/Photos/b.jpg' ) ) -- deleted by hand
+	stub.messages = {}
+	stub.publishedNow = 0
+
+	FPMaintenance.checkAndPublish( service )
+
+	eq( stub.publishedNow, 2, 'each collection published' )
+	eq( treeOf(), 'Photos/b.jpg\nPhotos/c.jpg\nPhotos/renamed/a2.jpg' )
+	eq( #stub.messages, 1, 'one combined summary' )
+	eq( stub.messages[1].title, 'Check & Publish finished for "Mirror"' )
+	local text = stub.messages[1].text
+	check( text:match( '1 new photo published' ), text )
+	check( text:match( '1 photo updated' ), text )
+	check( text:match( '1 photo moved or renamed' ), text )
+	check( text:match( '1 photo found renamed or moved in Lightroom' ), text )
+	check( text:match( '1 published file was missing and was re%-created' ), text )
+	eq( stub.prefs.batchStarted, nil, 'batch closed' )
+end )
+
+test( 'French translation', function()
+	setup()
+	stub.loadLanguage( 'fr' )
+	local FPText = require 'FPText'
+	eq( FPText.T( 'Common/Cancel', 'Cancel' ), 'Annuler' )
+	eq( FPText.count( 3, 'Summary/New', '^1 new photo published', '^1 new photos published' ),
+		'3 nouvelles photos publiées' )
+	eq( FPText.T( 'Root/Cancelled', 'Publishing cancelled: the folder ^1 was not found.', 'X:' ),
+		'Publication annulée : le dossier X: est introuvable.' )
+	eq( FPText.T( 'Import/Intro', 'x' ):match( '^[^\n]*' ),
+		'Copie les collections et collections dynamiques d’un autre service de publication' )
+	-- unknown keys fall back to English, non-ASCII defaults are encoded
+	eq( FPText.T( 'Nope/Nope', 'Choose… ▸ “x”' ), 'Choose… ▸ “x”' )
+	eq( FPText.encode( 'é…' ), '^U+00E9^U+2026' )
+	stub.loadLanguage( nil )
+end )
+
+test( 'Info.lua', function()
+	local info = dofile( 'FolderPublisher.lrplugin/Info.lua' )
+	eq( info.LrToolkitIdentifier, _PLUGIN.id )
+	eq( #info.LrLibraryMenuItems, 4 )
+	eq( info.LrLibraryMenuItems[1].title, 'Folder Publisher: Check & Publish…' )
+	for _, item in ipairs( info.LrLibraryMenuItems ) do
+		check( io.open( 'FolderPublisher.lrplugin/' .. item.file ), item.file .. ' exists' )
+	end
 end )
 
 test( 'deleting published photos from the catalog', function()

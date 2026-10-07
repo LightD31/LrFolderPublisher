@@ -10,6 +10,7 @@ local LrTasks = import 'LrTasks'
 
 local FPCore = require 'FPCore'
 local FPSettings = require 'FPSettings'
+local FPText = require 'FPText'
 local logger = require 'FPLog'
 
 local FPMapping = {}
@@ -218,7 +219,7 @@ function FPMapping.example( photo, settings, colCtx, catalog, serviceName )
 		dest = LrPathUtils.child( dest, part )
 	end
 	if not nameKnown then
-		dest = dest .. '  (name from File Naming)'
+		dest = dest .. '  ' .. FPText.T( 'Example/NameFromLr', '(name from File Naming)' )
 	end
 	return source, dest
 end

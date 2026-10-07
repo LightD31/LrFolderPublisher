@@ -19,18 +19,22 @@ return {
 
 	LrLibraryMenuItems = {
 		{
-			title = 'Folder Publisher: Find Moved, Renamed or Missing Photos…',
+			title = LOC '$$$/FolderPublisher/Menu/CheckPublish=Folder Publisher: Check & Publish^.',
+			file = 'MenuCheckPublish.lua',
+		},
+		{
+			title = LOC '$$$/FolderPublisher/Menu/Check=Folder Publisher: Find Moved, Renamed or Missing Photos^.',
 			file = 'MenuCheck.lua',
 		},
 		{
-			title = 'Folder Publisher: Clean Up Orphaned Files…',
+			title = LOC '$$$/FolderPublisher/Menu/Orphans=Folder Publisher: Clean Up Orphaned Files^.',
 			file = 'MenuOrphans.lua',
 		},
 		{
-			title = 'Folder Publisher: Import from Another Publish Service…',
+			title = LOC '$$$/FolderPublisher/Menu/Import=Folder Publisher: Import from Another Publish Service^.',
 			file = 'MenuImport.lua',
 		},
 	},
 
-	VERSION = { major = 1, minor = 1, revision = 0, build = 2 },
+	VERSION = { major = 1, minor = 2, revision = 0, build = 3 },
 }
