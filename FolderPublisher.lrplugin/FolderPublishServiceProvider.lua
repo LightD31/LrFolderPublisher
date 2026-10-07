@@ -23,7 +23,11 @@ local FPFiles = require 'FPFiles'
 local FPMaintenance = require 'FPMaintenance'
 local FPMapping = require 'FPMapping'
 local FPSettings = require 'FPSettings'
+local FPSummary = require 'FPSummary'
+local FPText = require 'FPText'
 local logger = require 'FPLog'
+
+local T = FPText.T
 
 local provider = {}
 
@@ -35,9 +39,15 @@ provider.hideSections = { 'exportLocation' }
 provider.canExportVideo = true
 provider.exportPresetFields = FPSettings.exportPresetFields
 provider.small_icon = 'icon.png'
-provider.titleForGoToPublishedCollection = MAC_ENV and 'Show in Finder' or 'Show in Explorer'
-provider.titleForGoToPublishedPhoto = MAC_ENV and 'Show in Finder' or 'Show in Explorer'
+provider.titleForGoToPublishedPhoto = MAC_ENV and T( 'Reveal/Finder', 'Show in Finder' )
+	or T( 'Reveal/Explorer', 'Show in Explorer' )
 provider.supportsCustomSortOrder = false
+
+-- Remove files of photos taken out of the service before writing new ones:
+-- frees space first, and lets the publish summary include removals.
+function provider.deleteFirstOnPublish()
+	return true
+end
 
 provider.startDialog = FPDialogs.startDialog
 provider.sectionsForTopOfDialog = FPDialogs.sectionsForTopOfDialog
@@ -45,7 +55,7 @@ provider.sectionsForBottomOfDialog = FPDialogs.sectionsForBottomOfDialog
 
 function provider.getCollectionBehaviorInfo( publishSettings )
 	return {
-		defaultCollectionName = 'Mirrored Photos',
+		defaultCollectionName = T( 'Service/DefaultCollection', 'Mirrored Photos' ),
 		defaultCollectionCanBeDeleted = false,
 		canAddCollection = true,
 	}
@@ -68,10 +78,10 @@ function provider.shouldDeletePhotosFromServiceOnDeleteFromCatalog( publishSetti
 	if mode == 'keep' then
 		return 'ignore'
 	elseif mode == 'block' then
-		LrDialogs.message( 'These photos are published with Folder Publisher',
-			'This publish service is set to prevent deleting published photos from the catalog. '
-				.. 'Remove them from the publish service first, or change "When it is deleted from '
-				.. 'the catalog" under Removing Photos in the service settings.',
+		LrDialogs.message( T( 'Delete/BlockedTitle', 'These photos are published with Folder Publisher' ),
+			T( 'Delete/BlockedText', 'This publish service is set to prevent deleting published photos from '
+				.. 'the catalog. Remove them from the publish service first, or change "When it is deleted '
+				.. 'from the catalog" under Removing Photos in the service settings.' ),
 			'info' )
 		return 'cancel'
 	end
@@ -121,21 +131,21 @@ end
 local function resolveRoot( publishSettings )
 	local root = FPFiles.expandRoot( publishSettings.fp_root )
 	if root == '' then
-		LrErrors.throwUserError( 'No root folder is set for this publish service. '
-			.. 'Edit the publish service settings and choose one.' )
+		LrErrors.throwUserError( T( 'Root/NotSet', 'No folder is set for this publish service. '
+			.. 'Edit the publish service settings and choose one.' ) )
 	end
 	if not FPFiles.isDirectory( root ) then
 		local answer = LrDialogs.confirm(
-			'The publish root folder does not exist',
-			root .. '\n\nIf it is on an external or network drive, make sure the drive is '
-				.. 'connected before publishing. Otherwise the folder can be created now.',
-			'Create Folder', 'Cancel' )
+			T( 'Root/MissingTitle', 'The publish folder does not exist' ),
+			T( 'Root/MissingText', '^1\n\nIf it is on an external or network drive, connect the drive '
+				.. 'before publishing. Otherwise the folder can be created now.', root ),
+			T( 'Root/Create', 'Create Folder' ), T( 'Common/Cancel', 'Cancel' ) )
 		if answer ~= 'ok' then
-			LrErrors.throwUserError( 'Publishing cancelled: the root folder ' .. root .. ' was not found.' )
+			LrErrors.throwUserError( T( 'Root/Cancelled', 'Publishing cancelled: the folder ^1 was not found.', root ) )
 		end
 		LrFileUtils.createAllDirectories( root )
 		if not FPFiles.isDirectory( root ) then
-			LrErrors.throwUserError( 'Could not create the root folder ' .. root )
+			LrErrors.throwUserError( T( 'Root/CreateFailed', 'Could not create the folder ^1', root ) )
 		end
 	end
 	return root
@@ -151,19 +161,22 @@ function provider.processRenderedPhotos( functionContext, exportContext )
 
 	-- Photos whose original is offline are left for a later publish rather
 	-- than being rendered from a (lower quality) Smart Preview.
-	local offline = {}
+	local stats = FPSummary.emptyStats()
 	for photo in exportSession:photosToExport() do
 		local path = photo:getRawMetadata( 'path' )
 		if not FPFiles.exists( path ) then
-			offline[ #offline + 1 ] = path
+			stats.offline = stats.offline + 1
+			if #stats.offlinePaths < 10 then
+				stats.offlinePaths[ #stats.offlinePaths + 1 ] = path
+			end
 			exportSession:removePhoto( photo )
 		end
 	end
 
 	local nPhotos = exportSession:countRenditions()
 	local progressScope = exportContext:configureProgress {
-		title = nPhotos > 1 and string.format( 'Publishing %d photos to folder', nPhotos )
-			or 'Publishing one photo to folder',
+		title = FPText.count( nPhotos, 'Publish/Progress', 'Publishing one photo to folder',
+			'Publishing ^1 photos to folder' ),
 	}
 
 	local service = exportContext.publishService
@@ -194,6 +207,7 @@ function provider.processRenderedPhotos( functionContext, exportContext )
 		end
 
 		if not ok then
+			stats.failed = stats.failed + 1
 			rendition:uploadFailed( pathOrMessage )
 		else
 			local success, err = LrTasks.pcall( function()
@@ -251,9 +265,18 @@ function provider.processRenderedPhotos( functionContext, exportContext )
 
 				rendition:recordPublishedPhotoId( rel )
 				rendition:recordPublishedPhotoUrl( FPCore.fileUrl( dest ) )
+
+				if not previous then
+					stats.new = stats.new + 1
+				elseif FPCore.pathKey( previous ) ~= FPCore.pathKey( rel ) then
+					stats.moved = stats.moved + 1
+				else
+					stats.updated = stats.updated + 1
+				end
 			end )
 
 			if not success then
+				stats.failed = stats.failed + 1
 				logger:error( 'Publishing ' .. tostring( photo:getRawMetadata( 'path' ) ) .. ' failed: ' .. tostring( err ) )
 				rendition:uploadFailed( tostring( err ) )
 			end
@@ -262,14 +285,7 @@ function provider.processRenderedPhotos( functionContext, exportContext )
 
 	progressScope:done()
 
-	if #offline > 0 then
-		LrDialogs.message(
-			string.format( '%d photo(s) were not published because their original file is offline', #offline ),
-			table.concat( offline, '\n', 1, math.min( #offline, 10 ) ) .. ( #offline > 10 and '\n…' or '' )
-				.. '\n\nThey stay in "New Photos to Publish" or "Modified Photos to Re-Publish" and will be '
-				.. 'published next time, once the drive is connected.',
-			'info' )
-	end
+	FPSummary.publishFinished( colCtx.name, stats, FPSettings.get( settings, 'fp_showSummary' ) )
 end
 
 --------------------------------------------------------------------------------
@@ -281,6 +297,7 @@ local function removeRemoteIds( publishSettings, remoteIds, refs, removedCallbac
 	local prune = publishSettings.fp_pruneEmptyFolders ~= false
 	local failures = {}
 	local dirs = {}
+	local nRemoved = 0
 
 	for i, remoteId in ipairs( remoteIds ) do
 		local removed = true
@@ -289,6 +306,7 @@ local function removeRemoteIds( publishSettings, remoteIds, refs, removedCallbac
 			local path = FPFiles.absolute( root, remoteId )
 			removed = FPFiles.removePublished( path, mode )
 			if removed then
+				nRemoved = nRemoved + 1
 				dirs[ LrPathUtils.parent( path ) ] = true
 			else
 				failures[ #failures + 1 ] = path
@@ -308,13 +326,15 @@ local function removeRemoteIds( publishSettings, remoteIds, refs, removedCallbac
 		end
 	end
 
+	FPSummary.recordRemoved( nRemoved )
+
 	if #failures > 0 then
 		local list = table.concat( failures, '\n', 1, math.min( #failures, 10 ) )
-		LrDialogs.message( 'Some published files could not be removed',
-			list .. ( #failures > 10 and '\n…' or '' )
-				.. '\n\nThey stay listed as "Deleted Photos to Remove" so you can retry. If moving to '
-				.. 'the Trash is not supported on this drive, change the removal option '
-				.. 'in the publish service settings.',
+		LrDialogs.message( T( 'Remove/FailedTitle', 'Some published files could not be removed' ),
+			list .. ( #failures > 10 and '\n…' or '' ) .. '\n\n'
+				.. T( 'Remove/FailedText', 'They stay listed as "Deleted Photos to Remove" so you can retry. '
+					.. 'If moving to the Trash is not supported on this drive, change the removal option '
+					.. 'in the publish service settings.' ),
 			'warning' )
 	end
 end
@@ -343,7 +363,7 @@ function provider.deletePublishedCollection( publishSettings, info )
 	end
 	LrFunctionContext.callWithContext( 'FolderPublisher.deletePublishedCollection', function( context )
 		local progress = LrDialogs.showModalProgressDialog {
-			title = 'Removing published files of "' .. tostring( info.name ) .. '"',
+			title = T( 'Remove/Progress', 'Removing published files of "^1"', tostring( info.name ) ),
 			functionContext = context,
 		}
 		-- Files still used by another collection of the service are kept. If
@@ -376,7 +396,7 @@ function provider.goToPublishedPhoto( publishSettings, info )
 			LrShell.revealInShell( path )
 			return
 		end
-		LrDialogs.message( 'The published file was not found', path, 'info' )
+		LrDialogs.message( T( 'Reveal/FileMissing', 'The published file was not found' ), path, 'info' )
 	end
 end
 
@@ -401,7 +421,7 @@ function provider.goToPublishedCollection( publishSettings, info )
 	if FPFiles.isDirectory( target ) then
 		LrShell.revealInShell( target )
 	else
-		LrDialogs.message( 'The publish folder was not found', target, 'info' )
+		LrDialogs.message( T( 'Reveal/FolderMissing', 'The publish folder was not found' ), target, 'info' )
 	end
 end
 

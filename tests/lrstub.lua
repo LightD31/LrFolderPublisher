@@ -126,6 +126,14 @@ local LrDate = {
 	timeToUserFormat = function( t, fmt )
 		return os.date( fmt, t + COCOA_EPOCH )
 	end,
+	currentTime = function()
+		return os.time() - COCOA_EPOCH + ( stub.clockOffset or 0 )
+	end,
+}
+
+stub.prefs = {}
+local LrPrefs = {
+	prefsForPlugin = function() return stub.prefs end,
 }
 
 local function progressScope()
@@ -242,6 +250,7 @@ local namespaces = {
 	LrFunctionContext = LrFunctionContext,
 	LrLogger = LrLogger,
 	LrPathUtils = LrPathUtils,
+	LrPrefs = LrPrefs,
 	LrProgressScope = LrProgressScope,
 	LrShell = LrShell,
 	LrTasks = LrTasks,
@@ -254,6 +263,46 @@ end
 
 MAC_ENV = true
 WIN_ENV = false
+
+--------------------------------------------------------------------------------
+-- Localisation: LOC behaves like Lightroom's, reading TranslatedStrings_<lang>.txt
+
+local function utf8char( cp )
+	if cp < 0x80 then
+		return string.char( cp )
+	elseif cp < 0x800 then
+		return string.char( 0xC0 + math.floor( cp / 64 ), 0x80 + cp % 64 )
+	end
+	return string.char( 0xE0 + math.floor( cp / 4096 ), 0x80 + math.floor( cp / 64 ) % 64, 0x80 + cp % 64 )
+end
+
+function stub.loadLanguage( lang )
+	if not lang then
+		stub.translations = nil
+		return
+	end
+	stub.translations = {}
+	for line in io.lines( 'FolderPublisher.lrplugin/TranslatedStrings_' .. lang .. '.txt' ) do
+		local key, value = line:match( '^"%$%$%$/(.-)=(.*)"$' )
+		if key then
+			stub.translations[ key ] = value
+		end
+	end
+end
+
+function LOC( zstring, ... ) -- luacheck: ignore
+	local key, value = zstring:match( '^%$%$%$/([%w/]+)=(.*)$' )
+	assert( key, 'malformed ZString: ' .. zstring )
+	assert( not value:find( '[\128-\255]' ), 'non-ASCII default text in ' .. key )
+	if stub.translations and stub.translations[ key ] then
+		value = stub.translations[ key ]
+	end
+	local args = { ... }
+	value = value:gsub( '%^U%+(%x%x%x%x)', function( h ) return utf8char( tonumber( h, 16 ) ) end )
+	value = value:gsub( '%^n', '\n' ):gsub( '%^r', '\r' ):gsub( '%^%.', '…' )
+	value = value:gsub( '%^(%d)', function( d ) return tostring( args[ tonumber( d ) ] or '' ) end )
+	return value
+end
 _PLUGIN = { id = 'io.github.lightd31.folderpublisher' }
 
 stub.progressScope = progressScope
@@ -369,6 +418,20 @@ function stub.newCollection( id, name, settings, parent )
 		assert( stub.inWriteAccess, 'addPhotos outside withWriteAccessDo' )
 		assert( not self.searchDesc, 'smart collection' )
 		for _, photo in ipairs( photos ) do self:add( photo ) end
+	end
+	-- Lightroom publishes what is new or modified, then calls back.
+	function c:publishNow( done )
+		local photos = {}
+		for _, e in ipairs( self.entries ) do
+			if not e.remoteId or e.edited then
+				photos[ #photos + 1 ] = e.photo
+			end
+		end
+		if #photos > 0 then
+			stub.publish( stub.provider, self.service, self, photos )
+		end
+		stub.publishedNow = ( stub.publishedNow or 0 ) + 1
+		done()
 	end
 	function c:getPublishedPhotos()
 		local out = {}

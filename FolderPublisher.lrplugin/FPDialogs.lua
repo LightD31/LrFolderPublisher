@@ -14,26 +14,29 @@ local FPCore = require 'FPCore'
 local FPFiles = require 'FPFiles'
 local FPMapping = require 'FPMapping'
 local FPSettings = require 'FPSettings'
+local FPText = require 'FPText'
 
+local T = FPText.T
 local bind = LrView.bind
 local share = LrView.share
 
 local FPDialogs = {}
 
-local REVEAL_TITLE = MAC_ENV and 'Show in Finder' or 'Show in Explorer'
+local REVEAL_TITLE = MAC_ENV and T( 'Reveal/Finder', 'Show in Finder' ) or T( 'Reveal/Explorer', 'Show in Explorer' )
 local NOTE_COLOR = LrColor( 0.45, 0.45, 0.45 )
 local WARN_COLOR = LrColor( 0.75, 0.35, 0 )
 
-local TOKEN_HELP = 'Tokens: ' .. table.concat( ( function()
+local TOKEN_HELP = T( 'Names/Tokens', 'Tokens:' ) .. ' ' .. table.concat( ( function()
 	local out = {}
 	for i, name in ipairs( FPCore.TOKEN_NAMES ) do
 		out[i] = '{' .. name .. '}'
 	end
 	return out
-end )(), ' ' ) .. '\n"/" creates sub-folders. {A|B|"text"} falls back to B, then to the text, when A is empty.'
+end )(), ' ' ) .. '\n' .. T( 'Names/TokenSyntax',
+	'"/" creates sub-folders. {A|B|"text"} falls back to B, then to the text, when A is empty.' )
 
 local function levelItems( noneTitle )
-	local items = { { title = noneTitle or 'None', value = 0 } }
+	local items = { { title = noneTitle or T( 'Common/None', 'None' ), value = 0 } }
 	for i = 1, 9 do
 		items[ #items + 1 ] = { title = tostring( i ), value = i }
 	end
@@ -56,7 +59,7 @@ local function updateExample( target, settings, makeColCtx, collection )
 			local catalog = LrApplication.activeCatalog()
 			local photo = FPMapping.examplePhoto( catalog, collection )
 			if not photo then
-				return nil, 'Select a photo in the Library to see an example.'
+				return nil, T( 'Example/NoPhoto', 'Select a photo in the Library to see an example.' )
 			end
 			return FPMapping.example( photo, settings, makeColCtx(), catalog, 'Service' )
 		end )
@@ -65,7 +68,7 @@ local function updateExample( target, settings, makeColCtx, collection )
 			target.fp_exampleDest = dest or ''
 		else
 			target.fp_exampleSource = ''
-			target.fp_exampleDest = 'Example unavailable: ' .. tostring( source )
+			target.fp_exampleDest = T( 'Example/Failed', 'Example unavailable: ^1', tostring( source ) )
 		end
 	end )
 end
@@ -75,7 +78,7 @@ local function exampleRows( f, labelWidth, object )
 		bind_to_object = object,
 		spacing = f:label_spacing(),
 		f:row {
-			f:static_text { title = 'Example:', alignment = 'right', width = labelWidth },
+			f:static_text { title = T( 'Example/Source', 'Example:' ), alignment = 'right', width = labelWidth },
 			f:static_text {
 				title = bind 'fp_exampleSource',
 				fill_horizontal = 1,
@@ -85,7 +88,7 @@ local function exampleRows( f, labelWidth, object )
 			},
 		},
 		f:row {
-			f:static_text { title = 'is published to:', alignment = 'right', width = labelWidth },
+			f:static_text { title = T( 'Example/Dest', 'is published to:' ), alignment = 'right', width = labelWidth },
 			f:static_text {
 				title = bind 'fp_exampleDest',
 				fill_horizontal = 1,
@@ -122,15 +125,15 @@ local function runMaintenance( propertyTable, action )
 		local FPMaintenance = require 'FPMaintenance'
 		local ok, err = LrTasks.pcall( function()
 			if not propertyTable.fp_originalRoot or propertyTable.fp_originalRoot == '' then
-				LrDialogs.message( 'Folder Publisher', 'Save this publish service first.', 'info' )
+				LrDialogs.message( 'Folder Publisher', T( 'Maint/SaveFirst', 'Save this publish service first.' ), 'info' )
 				return
 			end
 			local service, count = serviceBeingEdited( propertyTable )
 			if not service and count and count > 1 then
-				service = FPMaintenance.chooseService( 'Choose the publish service' )
+				service = FPMaintenance.chooseService( T( 'Maint/Choose', 'Choose the publish service' ) )
 			end
 			if not service then
-				LrDialogs.message( 'Folder Publisher', 'Save this publish service first.', 'info' )
+				LrDialogs.message( 'Folder Publisher', T( 'Maint/SaveFirst', 'Save this publish service first.' ), 'info' )
 				return
 			end
 			action( FPMaintenance, service )
@@ -151,16 +154,17 @@ function FPDialogs.startDialog( propertyTable )
 		local root = FPFiles.expandRoot( propertyTable.fp_root )
 		local problem
 		if root == '' then
-			problem = 'Choose the folder to publish to.'
+			problem = T( 'Dest/NoFolder', 'Choose the folder to publish to.' )
 			propertyTable.fp_rootStatus = ''
 		elseif FPFiles.isDirectory( root ) then
 			propertyTable.fp_rootStatus = ''
 		else
-			propertyTable.fp_rootStatus = 'This folder does not exist yet. You will be asked before it is created.'
+			propertyTable.fp_rootStatus = T( 'Dest/NotThere',
+				'This folder does not exist yet. You will be asked before it is created.' )
 		end
 		if not problem and propertyTable.fp_fileNaming == 'template'
 			and FPCore.trim( propertyTable.fp_template or '' ) == '' then
-			problem = 'Enter a file name template.'
+			problem = T( 'Names/NoTemplate', 'Enter a file name template.' )
 		end
 		propertyTable.LR_cantExportBecause = problem
 	end
@@ -192,16 +196,16 @@ function FPDialogs.sectionsForTopOfDialog( f, propertyTable )
 
 	return {
 		{
-			title = 'Folder Publisher: Destination',
+			title = T( 'Dest/Section', 'Folder Publisher: Destination' ),
 			synopsis = bind {
 				key = 'fp_root',
 				transform = function( value )
-					return ( value and value ~= '' ) and value or '(no folder chosen)'
+					return ( value and value ~= '' ) and value or T( 'Dest/NoneChosen', '(no folder chosen)' )
 				end,
 			},
 
 			f:row {
-				f:static_text { title = 'Publish to folder:', alignment = 'right', width = labelWidth },
+				f:static_text { title = T( 'Dest/Folder', 'Publish to folder:' ), alignment = 'right', width = labelWidth },
 				f:edit_field {
 					value = bind 'fp_root',
 					immediate = true,
@@ -209,10 +213,10 @@ function FPDialogs.sectionsForTopOfDialog( f, propertyTable )
 					width_in_chars = 36,
 				},
 				f:push_button {
-					title = 'Choose…',
+					title = T( 'Dest/ChooseButton', 'Choose…' ),
 					action = function()
 						local result = LrDialogs.runOpenPanel {
-							title = 'Choose the folder to publish to',
+							title = T( 'Dest/ChooseTitle', 'Choose the folder to publish to' ),
 							canChooseFiles = false,
 							canChooseDirectories = true,
 							canCreateDirectories = true,
@@ -241,23 +245,23 @@ function FPDialogs.sectionsForTopOfDialog( f, propertyTable )
 			},
 
 			f:row {
-				f:static_text { title = 'Mirror folders from:', alignment = 'right', width = labelWidth },
+				f:static_text { title = T( 'Dest/Base', 'Mirror folders from:' ), alignment = 'right', width = labelWidth },
 				f:popup_menu {
 					value = bind 'fp_folderBase',
 					items = {
-						{ title = 'Inside each top-level Lightroom folder', value = 'lrRootContents' },
-						{ title = 'Each top-level Lightroom folder, including its name', value = 'lrRoot' },
-						{ title = 'The full path on disk (without the drive)', value = 'full' },
+						{ title = T( 'Dest/BaseInside', 'Inside each top-level Lightroom folder' ), value = 'lrRootContents' },
+						{ title = T( 'Dest/BaseWithName', 'Each top-level Lightroom folder, including its name' ), value = 'lrRoot' },
+						{ title = T( 'Dest/BaseFull', 'The full path on disk (without the drive)' ), value = 'full' },
 					},
 				},
 			},
 
 			f:row {
-				f:static_text { title = 'Strip leading folders:', alignment = 'right', width = labelWidth },
+				f:static_text { title = T( 'Path/StripLeading', 'Strip leading folders:' ), alignment = 'right', width = labelWidth },
 				f:popup_menu { value = bind 'fp_skipLevels', items = levelItems() },
 				f:spacer { width = 20 },
-				f:static_text { title = 'Limit depth to:' },
-				f:popup_menu { value = bind 'fp_maxDepth', items = levelItems( 'No limit' ) },
+				f:static_text { title = T( 'Dest/Depth', 'Limit depth to:' ) },
+				f:popup_menu { value = bind 'fp_maxDepth', items = levelItems( T( 'Dest/NoLimit', 'No limit' ) ) },
 			},
 
 			exampleRows( f, labelWidth, propertyTable ),
@@ -265,8 +269,8 @@ function FPDialogs.sectionsForTopOfDialog( f, propertyTable )
 			f:row {
 				f:spacer { width = labelWidth },
 				f:static_text {
-					title = 'Each published collection can add folders before or after this path, '
-						.. 'strip more folders, or flatten it.',
+					title = T( 'Dest/CollectionsNote', 'Each published collection can add folders before or after '
+						.. 'this path, strip more folders, or flatten it.' ),
 					size = 'small',
 					text_color = NOTE_COLOR,
 				},
@@ -275,15 +279,15 @@ function FPDialogs.sectionsForTopOfDialog( f, propertyTable )
 			f:separator { fill_horizontal = 1 },
 
 			f:row {
-				f:static_text { title = 'Maintenance:', alignment = 'right', width = labelWidth },
+				f:static_text { title = T( 'Maint/Label', 'Maintenance:' ), alignment = 'right', width = labelWidth },
 				f:push_button {
-					title = 'Find Moved, Renamed or Missing Photos…',
+					title = T( 'Maint/CheckButton', 'Find Moved, Renamed or Missing Photos…' ),
 					action = function()
 						runMaintenance( propertyTable, function( m, service ) m.checkService( service ) end )
 					end,
 				},
 				f:push_button {
-					title = 'Clean Up Orphaned Files…',
+					title = T( 'Maint/OrphansButton', 'Clean Up Orphaned Files…' ),
 					action = function()
 						runMaintenance( propertyTable, function( m, service ) m.cleanOrphans( service ) end )
 					end,
@@ -292,8 +296,8 @@ function FPDialogs.sectionsForTopOfDialog( f, propertyTable )
 			f:row {
 				f:spacer { width = labelWidth },
 				f:static_text {
-					title = 'Lightroom does not flag renamed or moved photos for republishing; the first '
-						.. 'button finds them.\nBoth are also in Library ▸ Plug-in Extras.',
+					title = T( 'Maint/Note', 'Lightroom does not flag renamed or moved photos for republishing; '
+						.. 'the first button finds them.\nBoth, and Check & Publish, are in Library ▸ Plug-in Extras.' ),
 					size = 'small',
 					height_in_lines = 2,
 					text_color = NOTE_COLOR,
@@ -302,33 +306,33 @@ function FPDialogs.sectionsForTopOfDialog( f, propertyTable )
 		},
 
 		{
-			title = 'Folder Publisher: File Names',
+			title = T( 'Names/Section', 'Folder Publisher: File Names' ),
 			synopsis = bind {
 				key = 'fp_fileNaming',
 				transform = function( value )
 					if value == 'template' then
-						return 'Template'
+						return T( 'Names/SynTemplate', 'Template' )
 					elseif value == 'lightroom' then
-						return 'Lightroom File Naming'
+						return T( 'Names/SynLightroom', 'Lightroom File Naming' )
 					end
-					return 'Same as original'
+					return T( 'Names/SynOriginal', 'Same as original' )
 				end,
 			},
 
 			f:row {
-				f:static_text { title = 'Name published files:', alignment = 'right', width = labelWidth },
+				f:static_text { title = T( 'Names/Mode', 'Name published files:' ), alignment = 'right', width = labelWidth },
 				f:popup_menu {
 					value = bind 'fp_fileNaming',
 					items = {
-						{ title = 'Same as the original file', value = 'library' },
-						{ title = 'With a template', value = 'template' },
-						{ title = 'With the File Naming section above', value = 'lightroom' },
+						{ title = T( 'Names/ModeOriginal', 'Same as the original file' ), value = 'library' },
+						{ title = T( 'Names/ModeTemplate', 'With a template' ), value = 'template' },
+						{ title = T( 'Names/ModeLightroom', 'With the File Naming section above' ), value = 'lightroom' },
 					},
 				},
 			},
 
 			f:row {
-				f:static_text { title = 'Template:', alignment = 'right', width = labelWidth },
+				f:static_text { title = T( 'Names/Template', 'Template:' ), alignment = 'right', width = labelWidth },
 				f:edit_field {
 					value = bind 'fp_template',
 					immediate = true,
@@ -355,15 +359,15 @@ function FPDialogs.sectionsForTopOfDialog( f, propertyTable )
 				f:spacer { width = labelWidth },
 				f:checkbox {
 					value = bind 'fp_virtualCopySuffix',
-					title = 'Add the copy name to virtual copies, e.g. "IMG_1234 (Copy 1).jpg"',
+					title = T( 'Names/VirtualCopies', 'Add the copy name to virtual copies, e.g. "IMG_1234 (Copy 1).jpg"' ),
 				},
 			},
 
 			f:row {
 				f:spacer { width = labelWidth },
 				f:static_text {
-					title = 'Photos that would get the same name (RAW+JPEG pairs, names differing only in '
-						.. 'case) get "-2", "-3"… and keep it.',
+					title = T( 'Names/Collisions', 'Photos that would get the same name (RAW+JPEG pairs, names '
+						.. 'differing only in case) get "-2", "-3"… and keep it.' ),
 					size = 'small',
 					text_color = NOTE_COLOR,
 				},
@@ -382,7 +386,7 @@ function FPDialogs.sectionsForBottomOfDialog( f, propertyTable )
 	for i, trigger in ipairs( FPSettings.republishTriggers ) do
 		local column = columns[ math.ceil( i / perColumn ) ]
 		column[ #column + 1 ] = f:checkbox {
-			title = trigger.label,
+			title = T( 'Trig/' .. trigger.id, trigger.label ),
 			value = bind( 'fp_trig_' .. trigger.id ),
 		}
 	end
@@ -399,16 +403,17 @@ function FPDialogs.sectionsForBottomOfDialog( f, propertyTable )
 
 	return {
 		{
-			title = 'Folder Publisher: Republish When Metadata Changes',
-			synopsis = 'Metadata changes that mark photos for republishing',
+			title = T( 'Trig/Section', 'Folder Publisher: Republish When Metadata Changes' ),
+			synopsis = T( 'Trig/Synopsis', 'Metadata changes that mark photos for republishing' ),
 
 			f:row {
 				f:static_text {
-					title = 'Develop edits always mark a photo for republishing. Also mark it when this changes:',
+					title = T( 'Trig/Intro', 'Develop edits always mark a photo for republishing. Also mark it when '
+						.. 'this changes:' ),
 					fill_horizontal = 1,
 				},
-				f:push_button { title = 'All', action = function() setAll( true ) end },
-				f:push_button { title = 'None', action = function() setAll( false ) end },
+				f:push_button { title = T( 'Common/All', 'All' ), action = function() setAll( true ) end },
+				f:push_button { title = T( 'Common/None', 'None' ), action = function() setAll( false ) end },
 			},
 			f:row {
 				spacing = 30,
@@ -416,8 +421,8 @@ function FPDialogs.sectionsForBottomOfDialog( f, propertyTable )
 				columns[1], columns[2], columns[3],
 			},
 			f:static_text {
-				title = 'Changes apply to future edits only. After saving, Lightroom asks whether to republish '
-					.. 'everything: choose "Leave As Is" if you only changed these options.',
+				title = T( 'Trig/Note', 'Changes apply to future edits only. After saving, Lightroom asks whether '
+					.. 'to republish everything: choose "Leave As Is" if you only changed these options.' ),
 				size = 'small',
 				height_in_lines = 2,
 				width_in_chars = 80,
@@ -426,39 +431,41 @@ function FPDialogs.sectionsForBottomOfDialog( f, propertyTable )
 		},
 
 		{
-			title = 'Folder Publisher: Removing Photos',
+			title = T( 'Remove/Section', 'Folder Publisher: Removing Photos' ),
 			synopsis = bind {
 				key = 'fp_onRemove',
 				transform = function( value )
 					if value == 'keep' then
-						return 'Files of removed photos stay on disk'
+						return T( 'Remove/SynKeep', 'Files of removed photos stay on disk' )
 					elseif value == 'trash' then
-						return 'Files of removed photos go to the Trash'
+						return T( 'Remove/SynTrash', 'Files of removed photos go to the Trash' )
 					end
-					return 'Files of removed photos are deleted'
+					return T( 'Remove/SynDelete', 'Files of removed photos are deleted' )
 				end,
 			},
 
 			f:row {
-				f:static_text { title = 'When a photo leaves the service:', alignment = 'right', width = labelWidth },
+				f:static_text { title = T( 'Remove/OnRemove', 'When a photo leaves the service:' ), alignment = 'right',
+					width = labelWidth },
 				f:popup_menu {
 					value = bind 'fp_onRemove',
 					items = {
-						{ title = 'Delete its published file', value = 'delete' },
-						{ title = MAC_ENV and 'Move its published file to the Trash'
-							or 'Move its published file to the Recycle Bin', value = 'trash' },
-						{ title = 'Leave its published file on disk', value = 'keep' },
+						{ title = T( 'Remove/Delete', 'Delete its published file' ), value = 'delete' },
+						{ title = MAC_ENV and T( 'Remove/Trash', 'Move its published file to the Trash' )
+							or T( 'Remove/RecycleBin', 'Move its published file to the Recycle Bin' ), value = 'trash' },
+						{ title = T( 'Remove/Keep', 'Leave its published file on disk' ), value = 'keep' },
 					},
 				},
 			},
 			f:row {
-				f:static_text { title = 'When it is deleted from the catalog:', alignment = 'right', width = labelWidth },
+				f:static_text { title = T( 'Remove/OnCatalogDelete', 'When it is deleted from the catalog:' ),
+					alignment = 'right', width = labelWidth },
 				f:popup_menu {
 					value = bind 'fp_onCatalogDelete',
 					items = {
-						{ title = 'Remove it from the service (as above)', value = 'remove' },
-						{ title = 'Leave its published file on disk', value = 'keep' },
-						{ title = 'Don\'t allow deleting published photos', value = 'block' },
+						{ title = T( 'Remove/CatalogRemove', 'Remove it from the service (as above)' ), value = 'remove' },
+						{ title = T( 'Remove/Keep', 'Leave its published file on disk' ), value = 'keep' },
+						{ title = T( 'Remove/CatalogBlock', 'Don\'t allow deleting published photos' ), value = 'block' },
 					},
 				},
 			},
@@ -466,14 +473,14 @@ function FPDialogs.sectionsForBottomOfDialog( f, propertyTable )
 				f:spacer { width = labelWidth },
 				f:checkbox {
 					value = bind 'fp_pruneEmptyFolders',
-					title = 'Remove folders that become empty',
+					title = T( 'Remove/Prune', 'Remove folders that become empty' ),
 				},
 			},
 			f:row {
 				f:spacer { width = labelWidth },
 				f:static_text {
-					title = 'A file shared by several collections of this service is kept until the last one '
-						.. 'lets go of it.\nWhen a photo is renamed or moved, its old file is always removed.',
+					title = T( 'Remove/Note', 'A file shared by several collections of this service is kept until '
+						.. 'the last one lets go of it.\nWhen a photo is renamed or moved, its old file is always removed.' ),
 					size = 'small',
 					height_in_lines = 2,
 					text_color = NOTE_COLOR,
@@ -482,30 +489,47 @@ function FPDialogs.sectionsForBottomOfDialog( f, propertyTable )
 		},
 
 		{
-			title = 'Folder Publisher: File Dates',
+			title = T( 'After/Section', 'Folder Publisher: After Publishing' ),
 			synopsis = bind {
 				key = 'fp_fileDate',
 				transform = function( value )
-					return value == 'capture' and 'Capture time' or 'Time of publishing'
+					return value == 'capture' and T( 'After/SynCapture', 'Files dated with the capture time' )
+						or T( 'After/SynExport', 'Files dated with the time of publishing' )
 				end,
 			},
 			f:row {
-				f:static_text { title = 'Date of published files:', alignment = 'right', width = labelWidth },
+				f:static_text { title = T( 'After/Date', 'Date of published files:' ), alignment = 'right',
+					width = labelWidth },
 				f:popup_menu {
 					value = bind 'fp_fileDate',
 					items = {
-						{ title = 'Time of publishing', value = 'export' },
-						{ title = 'Photo capture time', value = 'capture' },
+						{ title = T( 'After/DateExport', 'Time of publishing' ), value = 'export' },
+						{ title = T( 'After/DateCapture', 'Photo capture time' ), value = 'capture' },
 					},
 				},
 			},
 			f:row {
 				f:spacer { width = labelWidth },
 				f:static_text {
-					title = 'This is the date shown in ' .. ( MAC_ENV and 'Finder' or 'Explorer' )
-						.. '. Backup and sync tools may use it to detect changes.',
+					title = MAC_ENV and T( 'After/DateNoteMac', 'This is the date shown in Finder. Backup and sync '
+						.. 'tools may use it to detect changes.' )
+						or T( 'After/DateNoteWin', 'This is the date shown in Explorer. Backup and sync tools may '
+						.. 'use it to detect changes.' ),
 					size = 'small',
 					text_color = NOTE_COLOR,
+				},
+			},
+			f:row {
+				f:static_text { title = T( 'After/Summary', 'Show a summary:' ), alignment = 'right',
+					width = labelWidth },
+				f:popup_menu {
+					value = bind 'fp_showSummary',
+					items = {
+						{ title = T( 'After/SummaryAlways', 'After every publish' ), value = 'always' },
+						{ title = T( 'After/SummaryProblems', 'Only when something needs attention' ),
+							value = 'problems' },
+						{ title = T( 'After/SummaryNever', 'Never' ), value = 'never' },
+					},
 				},
 			},
 		},
@@ -527,7 +551,7 @@ function FPDialogs.collectionSettingsView( f, publishSettings, info )
 
 	local function refresh()
 		updateExample( exampleTarget, publishSettings, function()
-			local name = collectionSettings.LR_liveName or info.name or 'Collection'
+			local name = collectionSettings.LR_liveName or info.name or T( 'Col/DefaultName', 'Collection' )
 			local path = {}
 			for i, p in ipairs( parents ) do
 				path[i] = p
@@ -564,38 +588,39 @@ function FPDialogs.collectionSettingsView( f, publishSettings, info )
 			fill_horizontal = 1,
 
 			f:static_text {
-				title = 'Photos go to the folder that mirrors their Lightroom folder (as set for the service), '
-					.. 'adjusted here:',
+				title = T( 'Col/Intro', 'Photos go to the folder that mirrors their Lightroom folder (as set for '
+					.. 'the service), adjusted here:' ),
 			},
 			f:row {
-				f:static_text { title = 'Folder structure:', alignment = 'right', width = labelWidth },
+				f:static_text { title = T( 'Col/Structure', 'Folder structure:' ), alignment = 'right', width = labelWidth },
 				f:popup_menu {
 					value = bind 'structure',
 					items = {
-						{ title = 'Mirror Lightroom folders', value = 'mirror' },
-						{ title = 'Flat: no sub-folders', value = 'flatten' },
+						{ title = T( 'Col/Mirror', 'Mirror Lightroom folders' ), value = 'mirror' },
+						{ title = T( 'Col/Flat', 'Flat: no sub-folders' ), value = 'flatten' },
 					},
 				},
 			},
 			f:row {
-				f:static_text { title = 'Strip leading folders:', alignment = 'right', width = labelWidth },
+				f:static_text { title = T( 'Path/StripLeading', 'Strip leading folders:' ), alignment = 'right',
+					width = labelWidth },
 				f:popup_menu { value = bind 'extraSkipLevels', items = levelItems(), enabled = mirroring },
 				f:spacer { width = 20 },
-				f:static_text { title = 'Strip trailing folders:' },
+				f:static_text { title = T( 'Path/StripTrailing', 'Strip trailing folders:' ) },
 				f:popup_menu { value = bind 'trailingSkipLevels', items = levelItems(), enabled = mirroring },
 			},
 			f:row {
-				f:static_text { title = 'Add before the path:', alignment = 'right', width = labelWidth },
+				f:static_text { title = T( 'Col/Before', 'Add before the path:' ), alignment = 'right', width = labelWidth },
 				f:edit_field { value = bind 'subfolder', immediate = true, width_in_chars = 30 },
 			},
 			f:row {
-				f:static_text { title = 'Add after the path:', alignment = 'right', width = labelWidth },
+				f:static_text { title = T( 'Col/After', 'Add after the path:' ), alignment = 'right', width = labelWidth },
 				f:edit_field { value = bind 'append', immediate = true, width_in_chars = 30 },
 			},
 			f:row {
 				f:spacer { width = labelWidth },
 				f:static_text {
-					title = 'Tokens are allowed, e.g. {Collection}, {CollectionPath}, {YYYY}, {Rating}.',
+					title = T( 'Col/Tokens', 'Tokens are allowed, e.g. {Collection}, {CollectionPath}, {YYYY}, {Rating}.' ),
 					size = 'small',
 					text_color = NOTE_COLOR,
 				},
@@ -606,7 +631,8 @@ function FPDialogs.collectionSettingsView( f, publishSettings, info )
 			f:row {
 				f:spacer { width = labelWidth },
 				f:static_text {
-					title = 'Photos whose path changes are marked for republishing; publishing moves their files.',
+					title = T( 'Col/Note', 'Photos whose path changes are marked for republishing; publishing moves '
+						.. 'their files.' ),
 					size = 'small',
 					text_color = NOTE_COLOR,
 				},

@@ -17,3 +17,5 @@ jobs:
         run: lua5.1 tests/run.lua
       - name: Integration tests
         run: lua5.1 tests/integration.lua
+      - name: Translations
+        run: python3 tools/i18n.py check

@@ -1,4 +1,4 @@
--- Library > Plug-in Extras > Folder Publisher: Clean Up Orphaned Files…
+-- Library > Plug-in Extras > Folder Publisher: Check & Publish…
 
 local LrDialogs = import 'LrDialogs'
 local LrTasks = import 'LrTasks'
@@ -8,9 +8,9 @@ local FPText = require 'FPText'
 
 LrTasks.startAsyncTask( function()
 	local ok, err = LrTasks.pcall( function()
-		local service = FPMaintenance.chooseService( FPText.T( 'Menu/OrphansTitle', 'Clean Up Orphaned Files' ) )
+		local service = FPMaintenance.chooseService( FPText.T( 'Menu/CheckPublishTitle', 'Check & Publish' ) )
 		if service then
-			FPMaintenance.cleanOrphans( service )
+			FPMaintenance.checkAndPublish( service )
 		end
 	end )
 	if not ok then
