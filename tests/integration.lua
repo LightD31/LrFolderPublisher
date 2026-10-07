@@ -6,11 +6,12 @@ package.path = 'FolderPublisher.lrplugin/?.lua;tests/?.lua;' .. package.path
 
 local stub = require 'lrstub'
 local FPSettings = require 'FPSettings'
+local FPCore = require 'FPCore'
 
 local passed, failed = 0, 0
 
 local base = stub.lines( 'mktemp -d' )[1]
-local LIB = '/lib/Photos'
+local LIB = base .. '/lib/Photos'
 
 local function exists( rel )
 	return stub.run( 'test -e ' .. stub.shq( stub.root .. '/' .. rel ) )
@@ -61,13 +62,17 @@ local function setup( settingsOverrides, collectionSpecs )
 	stub.confirmAnswers = {}
 	stub.run( 'mkdir -p ' .. stub.shq( stub.root ) )
 	local settings = defaults( settingsOverrides )
+	-- Most tests were written with the top-level folder name included.
+	if not ( settingsOverrides and settingsOverrides.fp_folderBase ) then
+		settings.fp_folderBase = 'lrRoot'
+	end
 	settings.fp_root = stub.root
 	local collections = {}
 	for i, spec in ipairs( collectionSpecs or { { name = 'Mirrored Photos' } } ) do
 		collections[i] = stub.newCollection( i, spec.name, spec.settings, spec.parent )
 	end
 	local service = stub.newService( 'Mirror', settings, collections )
-	stub.catalog = stub.newCatalog( { LIB, '/other' }, { service } )
+	stub.catalog = stub.newCatalog( { LIB, base .. '/other' }, { service } )
 	return service, collections
 end
 
@@ -112,7 +117,7 @@ test( 'a photo moved in Lightroom moves on disk and empty folders are pruned', f
 	local c = stub.newPhoto( 3, LIB .. '/2024/Other/IMG_2.CR3' )
 	stub.publish( provider, service, cols[1], { c } )
 	check( exists( 'Photos/2024/Other/IMG_2.jpg' ) )
-	c.raw.path = LIB .. '/2025/New Name/IMG_2b.CR3'
+	stub.setPath( c, LIB .. '/2025/New Name/IMG_2b.CR3' )
 	stub.publish( provider, service, cols[1], { c } )
 	eq( treeOf(), 'Photos/2025/New Name/IMG_2b.jpg' )
 	check( not exists( 'Photos/2024' ), 'empty folders pruned' )
@@ -122,7 +127,7 @@ test( 'pruning can be disabled', function()
 	local service, cols = setup { fp_pruneEmptyFolders = false }
 	local c = stub.newPhoto( 3, LIB .. '/2024/Other/IMG_2.CR3' )
 	stub.publish( provider, service, cols[1], { c } )
-	c.raw.path = LIB .. '/2025/IMG_2.CR3'
+	stub.setPath( c, LIB .. '/2025/IMG_2.CR3' )
 	stub.publish( provider, service, cols[1], { c } )
 	check( exists( 'Photos/2024/Other' ), 'folder kept' )
 	check( not exists( 'Photos/2024/Other/IMG_2.jpg' ), 'old file removed' )
@@ -134,9 +139,15 @@ test( 'folder base, skip and depth options', function()
 	stub.publish( provider, service, cols[1], { a } )
 	eq( treeOf(), 'Trip/IMG_1.jpg' )
 
-	service, cols = setup { fp_folderBase = 'full' }
-	stub.publish( provider, service, cols[1], { stub.newPhoto( 1, '/somewhere/else/IMG_9.NEF' ) } )
+	local depth = #FPCore.splitPath( base )
+	service, cols = setup { fp_folderBase = 'full', fp_skipLevels = depth }
+	stub.publish( provider, service, cols[1], { stub.newPhoto( 1, base .. '/somewhere/else/IMG_9.NEF' ) } )
 	eq( treeOf(), 'somewhere/else/IMG_9.jpg' )
+
+	service, cols = setup { fp_folderBase = 'lrRootContents' }
+	stub.publish( provider, service, cols[1], { stub.newPhoto( 1, LIB .. '/2024/IMG_1.CR3' ) } )
+	eq( treeOf(), '2024/IMG_1.jpg', 'default layout, as in the original plug-in' )
+	eq( FPSettings.default( 'fp_folderBase' ), 'lrRootContents' )
 end )
 
 test( 'collection sub-folder, flatten and extra skip', function()
@@ -144,11 +155,16 @@ test( 'collection sub-folder, flatten and extra skip', function()
 		{ name = 'Best', settings = { subfolder = '{CollectionPath}', structure = 'flatten' },
 			parent = { getName = function() return 'Portfolio' end, getParent = function() end } },
 		{ name = 'Web', settings = { subfolder = 'web/{YYYY}', extraSkipLevels = 2 } },
+		{ name = 'Small', settings = { subfolder = 'Web', extraSkipLevels = 1, trailingSkipLevels = 1,
+			append = 'small/{Collection}' } },
 	} )
 	local a = stub.newPhoto( 1, LIB .. '/2024/Trip/IMG_1.CR3' )
 	stub.publish( provider, service, cols[1], { a } )
 	stub.publish( provider, service, cols[2], { a } )
 	eq( treeOf(), 'Portfolio/Best/IMG_1.jpg\nweb/2001/Trip/IMG_1.jpg' )
+	-- Photos/2024/Trip -> strip 1 leading, 1 trailing -> 2024
+	stub.publish( provider, service, cols[3], { a } )
+	check( exists( 'Web/2024/small/Small/IMG_1.jpg' ), treeOf() )
 end )
 
 test( 'virtual copies and templates', function()
@@ -241,7 +257,7 @@ test( 'removal modes: trash and keep', function()
 	-- ...but a photo that moves never leaves a duplicate behind
 	local b = stub.newPhoto( 2, LIB .. '/y/IMG_2.CR3' )
 	stub.publish( provider, service, cols[1], { b } )
-	b.raw.path = LIB .. '/z/IMG_2.CR3'
+	stub.setPath( b, LIB .. '/z/IMG_2.CR3' )
 	stub.publish( provider, service, cols[1], { b } )
 	eq( treeOf(), 'Photos/x/IMG_1.jpg\nPhotos/z/IMG_2.jpg' )
 end )
@@ -316,7 +332,7 @@ test( 'maintenance: detects moved, renamed and missing photos', function()
 	FPMaintenance.checkService( service )
 	check( stub.messages[1].text:match( 'where they should be' ), stub.messages[1].text )
 
-	c.raw.path = LIB .. '/y/IMG_3.CR3'                   -- moved in Lightroom
+	stub.setPath( c, LIB .. '/y/IMG_3.CR3' ) -- moved in Lightroom
 	stub.run( 'rm ' .. stub.shq( stub.root .. '/Photos/x/IMG_1-2.jpg' ) ) -- deleted on disk
 	stub.messages = {}
 	FPMaintenance.checkService( service )
@@ -357,13 +373,31 @@ test( 'maintenance: orphan clean-up', function()
 end )
 
 test( 'republish triggers', function()
-	local t = provider.metadataThatTriggersRepublish( defaults { fp_trig_default = true, fp_trig_title = false } )
+	local t = provider.metadataThatTriggersRepublish( defaults { fp_trig_default = true, fp_trig_title = false,
+		fp_trig_creator = true } )
 	eq( t.default, true )
 	eq( t.title, false )
 	eq( t.keywords, true )
+	eq( t.creatorEmail, true )
 	local d = provider.metadataThatTriggersRepublish( nil )
 	eq( d.caption, true )
-	eq( d.gpsAltitude, false )
+	eq( d.gpsAltitude, true )
+	eq( d.city, true )
+	eq( d.rating, false )
+	eq( d.default, false )
+	-- every key is one documented by the SDK
+	local documented = {}
+	for k in ( 'default rating label title caption gps gpsAltitude creator creatorJobTitle creatorAddress '
+		.. 'creatorCity creatorStateProvince creatorPostalCode creatorCountry creatorPhone creatorEmail '
+		.. 'creatorUrl headline iptcSubjectCode descriptionWriter iptcCategory iptcOtherCategories '
+		.. 'dateCreated intellectualGenre scene location city stateProvince country isoCountryCode '
+		.. 'jobIdentifier instructions provider source copyright rightsUsageTerms copyrightInfoUrl '
+		.. 'copyrightStatus keywords customMetadata' ):gmatch( '%S+' ) do
+		documented[ k ] = true
+	end
+	for k in pairs( d ) do
+		check( documented[ k ], 'undocumented key ' .. k )
+	end
 end )
 
 test( 'show in Finder', function()
@@ -376,43 +410,128 @@ test( 'show in Finder', function()
 	eq( stub.revealed[2], stub.root .. '/Best' )
 end )
 
-test( 'dialogs build and preview works', function()
+test( 'dialogs build, with live examples', function()
 	local service = setup()
 	local FPDialogs = require 'FPDialogs'
-	local props = defaults { LR_format = 'JPEG' }
-	props.fp_root = ''
-	function props:addObserver() end
+	local props = stub.observable( defaults { LR_format = 'JPEG', fp_root = '' } )
 	FPDialogs.startDialog( props )
 	check( props.LR_cantExportBecause, 'empty root blocks saving' )
-	props.fp_root = stub.root
-	FPDialogs.startDialog( props )
+	check( props.fp_exampleDest:match( 'Select a photo' ), props.fp_exampleDest )
+
+	stub.catalog.targetPhoto = stub.newPhoto( 1, LIB .. '/2024/IMG_7.CR3' )
+	props.fp_root = stub.root -- observers re-validate and refresh the example
 	eq( props.LR_cantExportBecause, nil )
+	eq( props.fp_exampleSource, LIB .. '/2024/IMG_7.CR3' )
+	eq( props.fp_exampleDest, stub.root .. '/2024/IMG_7.jpg' )
+	props.fp_folderBase = 'lrRoot'
+	eq( props.fp_exampleDest, stub.root .. '/Photos/2024/IMG_7.jpg' )
 
 	local f = stub.factory
-	local top = FPDialogs.sectionsForTopOfDialog( f, props )
-	local bottom = FPDialogs.sectionsForBottomOfDialog( f, props )
-	eq( #top, 2 )
-	eq( #bottom, 2 )
+	eq( #FPDialogs.sectionsForTopOfDialog( f, props ), 2 )
+	eq( #FPDialogs.sectionsForBottomOfDialog( f, props ), 3 )
 
-	-- find and press the preview button
-	local function find( node, title )
-		if type( node ) ~= 'table' then return nil end
-		if node.title == title and node.action then return node end
-		for _, child in pairs( node ) do
-			local found = find( child, title )
-			if found then return found end
-		end
-	end
-	local button = assert( find( top, 'Preview with Selected Photo' ) )
-	button.action()
-	check( props.fp_preview:match( 'Select a photo' ), props.fp_preview )
-	stub.catalog.targetPhoto = stub.newPhoto( 1, LIB .. '/2024/IMG_7.CR3' )
-	button.action()
-	eq( props.fp_preview, 'Photos/2024/IMG_7.jpg' )
-
-	local cs = {}
-	provider.viewForCollectionSettings( f, service.settings, { collectionSettings = cs } )
+	-- collection dialog: example follows the settings as they are edited
+	local cs = stub.observable()
+	local ctx = stub.observable()
+	local info = { collectionSettings = cs, pluginContext = ctx, name = 'Best', parents = { { name = 'Set' } } }
+	service.settings.LR_format = 'JPEG'
+	provider.viewForCollectionSettings( f, service.settings, info )
 	eq( cs.structure, 'mirror' )
+	eq( ctx.fp_exampleDest, stub.root .. '/Photos/2024/IMG_7.jpg' )
+	cs.subfolder = '{CollectionPath}'
+	eq( ctx.fp_exampleDest, stub.root .. '/Set/Best/Photos/2024/IMG_7.jpg' )
+	cs.trailingSkipLevels = 1
+	cs.append = 'x'
+	eq( ctx.fp_exampleDest, stub.root .. '/Set/Best/Photos/x/IMG_7.jpg' )
+	eq( cs.fp_exampleDest, nil, 'example not stored in the collection settings' )
+end )
+
+test( 'offline originals are skipped, not rendered', function()
+	local service, cols = setup()
+	local a = stub.newPhoto( 1, LIB .. '/a.CR3' )
+	local b = stub.newPhoto( 2, LIB .. '/b.CR3' )
+	stub.run( 'rm ' .. stub.shq( b.raw.path ) )
+	stub.publish( provider, service, cols[1], { a, b } )
+	eq( treeOf(), 'Photos/a.jpg' )
+	eq( cols[1]:entryFor( b ).remoteId, nil, 'b stays unpublished' )
+	eq( #stub.messages, 1 )
+	check( stub.messages[1].title:match( '^1 photo' ), stub.messages[1].title )
+end )
+
+test( 'deleting published photos from the catalog', function()
+	stub.messages = {}
+	eq( provider.shouldDeletePhotosFromServiceOnDeleteFromCatalog( defaults(), 3 ), 'delete' )
+	eq( provider.shouldDeletePhotosFromServiceOnDeleteFromCatalog( defaults { fp_onCatalogDelete = 'keep' }, 3 ), 'ignore' )
+	eq( provider.shouldDeletePhotosFromServiceOnDeleteFromCatalog( defaults { fp_onCatalogDelete = 'block' }, 3 ), 'cancel' )
+	eq( #stub.messages, 1 )
+end )
+
+test( 'import from another folder-publishing service', function()
+	local FPMigration = require 'FPMigration'
+	local _, cols = setup( { fp_folderBase = 'lrRootContents' }, { { name = 'Mirrored Photos' } } )
+	local dest = stub.catalog.services[1]
+	cols[1].isDefault = true
+	local root = stub.root
+
+	local lib = base .. '/lib/Lightroom sync'
+	stub.catalog.topFolders = { lib }
+	local a = stub.newPhoto( 11, lib .. '/Guilde/2025 Weekend/DSC1.ARW' )
+	local b = stub.newPhoto( 12, lib .. '/Guilde/2025 Weekend/DSC2.ARW' )
+	local c = stub.newPhoto( 13, lib .. '/Guilde/Other/DSC3.ARW', { rating = 4 } )
+	local d = stub.newPhoto( 14, lib .. '/Guilde/Other/DSC4.ARW' )
+	stub.catalog.allPhotos = { a, b, c, d }
+	for _, rel in ipairs { 'Guilde/2025 Weekend/DSC1.jpg', 'Guilde/2025 Weekend/DSC2.jpg', 'Web/Guilde/Other/DSC3.jpg' } do
+		stub.touch( root .. '/' .. rel )
+	end
+
+	-- the old service: absolute ids, or only a file:// URL
+	local oldDefault = stub.newCollection( 1, 'Default', { jf_whatever = 1 } )
+	oldDefault.isDefault = true
+	oldDefault:add( a ).remoteId = root .. '/Guilde/2025 Weekend/DSC1.jpg'
+	local eb = oldDefault:add( b )
+	eb.remoteId, eb.url, eb.edited = 42, FPCore.fileUrl( root .. '/Guilde/2025 Weekend/DSC2.jpg' ), true
+	local stars = stub.newCollection( 2, 'Stars' )
+	stars.searchDesc = { criteria = 'rating', operation = '>=', value = 3,
+		match = function( p ) return ( p.raw.rating or 0 ) >= 3 end }
+	stars:add( c ).remoteId = root .. '/Web/Guilde/Other/DSC3.jpg'
+	local old = stub.newService( 'jf Folder Publisher', { root = root }, { oldDefault, stars }, 'info.regex.lightroom.folder-publisher' )
+	local sub = stub.newCollection( 3, 'Sub' )
+	sub:add( d ).remoteId = root .. '/Guilde/Other/DSC4.jpg' -- file is missing
+	old.sets = { { name = 'Sets', collections = { sub }, sets = {},
+		getName = function() return 'Sets' end,
+		getChildCollections = function( self ) return self.collections end,
+		getChildCollectionSets = function() return {} end } }
+	table.insert( stub.catalog.services, 1, old )
+
+	stub.confirmAnswers = { 'ok' }
+	FPMigration.run()
+
+	local final = stub.messages[ #stub.messages ]
+	check( final and final.title == 'Import finished', final and final.text )
+	-- default collection: both photos published in place, b still needs republishing
+	eq( cols[1]:entryFor( a ).remoteId, 'Guilde/2025 Weekend/DSC1.jpg' )
+	eq( cols[1]:entryFor( a ).edited, false )
+	eq( cols[1]:entryFor( b ).remoteId, 'Guilde/2025 Weekend/DSC2.jpg' )
+	eq( cols[1]:entryFor( b ).edited, true )
+	eq( cols[1].settings.subfolder, '' )
+	-- smart collection: rules copied, layout "Web/" detected, photo published in place
+	local newStars = dest.collections[2]
+	eq( newStars.name, 'Stars' )
+	eq( newStars.searchDesc, stars.searchDesc )
+	eq( newStars.settings.subfolder, 'Web' )
+	eq( newStars:entryFor( c ).remoteId, 'Web/Guilde/Other/DSC3.jpg' )
+	-- set and collection recreated; the photo without a file waits to be published
+	local newSub = dest.sets[1].collections[1]
+	eq( newSub.name, 'Sub' )
+	check( newSub:entryFor( d ), 'd added' )
+	eq( newSub:entryFor( d ).remoteId, nil )
+	-- nothing was written to the folder
+	eq( treeOf(), 'Guilde/2025 Weekend/DSC1.jpg\nGuilde/2025 Weekend/DSC2.jpg\nWeb/Guilde/Other/DSC3.jpg' )
+
+	-- publishing afterwards keeps the existing files where they are
+	stub.publish( provider, dest, cols[1], { b } )
+	eq( cols[1]:entryFor( b ).remoteId, 'Guilde/2025 Weekend/DSC2.jpg' )
+	eq( treeOf(), 'Guilde/2025 Weekend/DSC1.jpg\nGuilde/2025 Weekend/DSC2.jpg\nWeb/Guilde/Other/DSC3.jpg' )
 end )
 
 --------------------------------------------------------------------------------

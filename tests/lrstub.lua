@@ -194,8 +194,31 @@ local LrView = {
 	share = function( name ) return { share = name } end,
 }
 
+--- A table that calls observers registered with addObserver on writes.
+function stub.observable( initial )
+	local data, observers = {}, {}
+	for k, v in pairs( initial or {} ) do
+		data[ k ] = v
+	end
+	local t = {}
+	function t:addObserver( key, a, b )
+		observers[ key ] = observers[ key ] or {}
+		table.insert( observers[ key ], b or a )
+	end
+	function t:pairs() return pairs( data ) end
+	return setmetatable( t, {
+		__index = data,
+		__newindex = function( _, k, v )
+			data[ k ] = v
+			for _, fn in ipairs( observers[ k ] or {} ) do
+				fn( t, k, v )
+			end
+		end,
+	} )
+end
+
 local LrBinding = {
-	makePropertyTable = function() return {} end,
+	makePropertyTable = function() return stub.observable() end,
 }
 
 local LrColor = function( ... ) return { ... } end
@@ -253,6 +276,7 @@ function stub.newPhoto( id, path, extra )
 		end
 	end
 	local photo = { localIdentifier = id, raw = raw, fmt = fmt }
+	stub.touch( path )
 	function photo:getRawMetadata( key ) return self.raw[ key ] end
 	function photo:getFormattedMetadata( key )
 		if key == 'unknownKey' then
@@ -261,6 +285,17 @@ function stub.newPhoto( id, path, extra )
 		return self.fmt[ key ]
 	end
 	return photo
+end
+
+--- Creates an (empty) file, and its folder.
+function stub.touch( path )
+	run( 'mkdir -p ' .. shq( LrPathUtils.parent( path ) ) .. ' && touch ' .. shq( path ) )
+end
+
+--- Simulates renaming or moving a photo's original in Lightroom.
+function stub.setPath( photo, path )
+	stub.touch( path )
+	photo.raw.path = path
 end
 
 function stub.newCollection( id, name, settings, parent )
@@ -275,7 +310,7 @@ function stub.newCollection( id, name, settings, parent )
 	function c:getParent() return self.parent end
 	function c:getService() return self.service end
 	function c:getCollectionInfoSummary()
-		return { collectionSettings = self.settings, name = self.name }
+		return { collectionSettings = self.settings, name = self.name, isDefaultCollection = self.isDefault }
 	end
 	function c:entryFor( photo )
 		for _, e in ipairs( self.entries ) do
@@ -300,11 +335,47 @@ function stub.newCollection( id, name, settings, parent )
 			end
 		end
 	end
+	function c:isSmartCollection() return self.searchDesc ~= nil end
+	function c:getSearchDescription()
+		assert( self.searchDesc, 'not a smart collection' )
+		return self.searchDesc
+	end
+	function c:setCollectionSettings( settings )
+		assert( stub.inWriteAccess, 'setCollectionSettings outside withWriteAccessDo' )
+		self.settings = settings
+	end
+	function c:getPhotos()
+		if self.searchDesc and stub.catalog then
+			-- smart collection: every photo the catalog knows that matches
+			for _, photo in ipairs( stub.catalog.allPhotos or {} ) do
+				if self.searchDesc.match( photo ) then
+					self:add( photo )
+				end
+			end
+		end
+		local out = {}
+		for _, e in ipairs( self.entries ) do out[ #out + 1 ] = e.photo end
+		return out
+	end
+	function c:addPhotoByRemoteId( photo, remoteId, url, published )
+		assert( stub.inWriteAccess, 'addPhotoByRemoteId outside withWriteAccessDo' )
+		if self.searchDesc and not self:entryFor( photo ) then
+			error( 'photo is not in this smart collection' )
+		end
+		local e = self:add( photo )
+		e.remoteId, e.url, e.edited = remoteId, url, not published
+	end
+	function c:addPhotos( photos )
+		assert( stub.inWriteAccess, 'addPhotos outside withWriteAccessDo' )
+		assert( not self.searchDesc, 'smart collection' )
+		for _, photo in ipairs( photos ) do self:add( photo ) end
+	end
 	function c:getPublishedPhotos()
 		local out = {}
 		for _, e in ipairs( self.entries ) do
 			local pp = {}
 			function pp:getRemoteId() return e.remoteId end
+			function pp:getRemoteUrl() return e.url end
 			function pp:getPhoto() return e.photo end
 			function pp:getEditedFlag() return e.edited == true end
 			function pp:setEditedFlag( v )
@@ -318,12 +389,60 @@ function stub.newCollection( id, name, settings, parent )
 	return c
 end
 
-function stub.newService( name, settings, collections )
-	local s = { name = name, settings = settings, collections = collections }
-	function s:getName() return self.name end
+local function newSet( name, parent, service )
+	local set = { name = name, parent = parent, service = service, collections = {}, sets = {} }
+	function set:getName() return self.name end
+	function set:getParent() return self.parent end
+	function set:getChildCollections() return self.collections end
+	function set:getChildCollectionSets() return self.sets end
+	return set
+end
+
+function stub.newService( name, settings, collections, pluginId )
+	local s = newSet( name, nil, nil )
+	s.settings = settings
+	s.collections = collections
+	s.pluginId = pluginId or _PLUGIN.id
+	s.nextId = 1000
 	function s:getPublishSettings() return self.settings end
-	function s:getChildCollections() return self.collections end
-	function s:getChildCollectionSets() return {} end
+	function s:getPluginId() return self.pluginId end
+	local function container( parent ) return parent or s end
+	local function findByName( list, name )
+		for _, x in ipairs( list ) do
+			if string.lower( x.name ) == string.lower( name ) then return x end
+		end
+	end
+	function s:createPublishedCollection( name, parent, canReturnExisting, searchDesc )
+		assert( stub.inWriteAccess, 'create outside withWriteAccessDo' )
+		local into = container( parent )
+		local existing = findByName( into.collections, name )
+		if existing then
+			return canReturnExisting and existing or nil
+		end
+		if findByName( into.sets, name ) then
+			return nil
+		end
+		self.nextId = self.nextId + 1
+		local c = stub.newCollection( self.nextId, name, nil, parent )
+		c.searchDesc = searchDesc
+		c.service = self
+		table.insert( into.collections, c )
+		return c
+	end
+	function s:createPublishedSmartCollection( name, searchDesc, parent, canReturnExisting )
+		return self:createPublishedCollection( name, parent, canReturnExisting, searchDesc )
+	end
+	function s:createPublishedCollectionSet( name, parent, canReturnExisting )
+		assert( stub.inWriteAccess, 'create outside withWriteAccessDo' )
+		local into = container( parent )
+		local existing = findByName( into.sets, name )
+		if existing then
+			return canReturnExisting and existing or nil
+		end
+		local set = newSet( name, parent, self )
+		table.insert( into.sets, set )
+		return set
+	end
 	for _, c in ipairs( collections ) do
 		c.service = s
 	end
@@ -335,19 +454,49 @@ function stub.newCatalog( topFolders, services )
 	function cat:getFolders()
 		local out = {}
 		for _, p in ipairs( self.topFolders ) do
-			out[ #out + 1 ] = { getPath = function() return p end }
+			out[ #out + 1 ] = {
+				getPath = function() return p end,
+				getPhotos = function()
+					local photos = {}
+					for _, photo in ipairs( cat.allPhotos or {} ) do
+						if photo.raw.path:sub( 1, #p + 1 ) == p .. '/' then
+							photos[ #photos + 1 ] = photo
+						end
+					end
+					return photos
+				end,
+			}
 		end
 		return out
 	end
-	function cat:getPublishServices() return self.services end
+	function cat:getPublishServices( pluginId )
+		if not pluginId then
+			return self.services
+		end
+		local out = {}
+		for _, service in ipairs( self.services ) do
+			if service:getPluginId() == pluginId then
+				out[ #out + 1 ] = service
+			end
+		end
+		return out
+	end
 	function cat:getTargetPhoto() return self.targetPhoto end
 	function cat:getPublishedCollectionByLocalIdentifier( id )
-		for _, s in ipairs( self.services ) do
-			for _, c in ipairs( s.collections ) do
+		local function search( container )
+			for _, c in ipairs( container.collections ) do
 				if c.localIdentifier == id then
 					return c
 				end
 			end
+			for _, set in ipairs( container.sets or {} ) do
+				local found = search( set )
+				if found then return found end
+			end
+		end
+		for _, s in ipairs( self.services ) do
+			local found = search( s )
+			if found then return found end
 		end
 	end
 	function cat:withWriteAccessDo( _, fn )
@@ -394,15 +543,37 @@ function stub.publish( provider, service, collection, photos, opts )
 		propertyTable = service.settings,
 		publishService = service,
 		publishedCollection = collection,
-		exportSession = { countRenditions = function() return #renditions end },
+		exportSession = {},
 	}
-	function exportContext:configureProgress() return progressScope() end
-	function exportContext:renditions()
+	local removed = {}
+	function exportContext.exportSession:countRenditions()
+		local n = 0
+		for _, r in ipairs( renditions ) do
+			if not removed[ r.photo ] then n = n + 1 end
+		end
+		return n
+	end
+	function exportContext.exportSession:photosToExport()
 		local i = 0
 		return function()
 			i = i + 1
-			if renditions[i] then
-				return i, renditions[i]
+			return renditions[i] and renditions[i].photo
+		end
+	end
+	function exportContext.exportSession:removePhoto( photo )
+		removed[ photo ] = true
+	end
+	function exportContext:configureProgress() return progressScope() end
+	function exportContext:renditions()
+		local active = {}
+		for _, r in ipairs( renditions ) do
+			if not removed[ r.photo ] then active[ #active + 1 ] = r end
+		end
+		local i = 0
+		return function()
+			i = i + 1
+			if active[i] then
+				return i, active[i]
 			end
 		end
 	end

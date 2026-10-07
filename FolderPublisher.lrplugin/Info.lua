@@ -26,7 +26,11 @@ return {
 			title = 'Folder Publisher: Clean Up Orphaned Files…',
 			file = 'MenuOrphans.lua',
 		},
+		{
+			title = 'Folder Publisher: Import from Another Publish Service…',
+			file = 'MenuImport.lua',
+		},
 	},
 
-	VERSION = { major = 1, minor = 0, revision = 0, build = 1 },
+	VERSION = { major = 1, minor = 1, revision = 0, build = 2 },
 }

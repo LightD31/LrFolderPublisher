@@ -398,9 +398,21 @@ function FPCore.joinRelative( ... )
 	return table.concat( out, '/' )
 end
 
+--- Drops `lead` components from the start and `trail` from the end.
+function FPCore.stripComponents( comps, lead, trail )
+	lead = tonumber( lead ) or 0
+	trail = tonumber( trail ) or 0
+	local out = {}
+	for i = lead + 1, #comps - trail do
+		out[ #out + 1 ] = comps[i]
+	end
+	return out
+end
+
 --- Builds the relative target path for a photo.
--- @param args.subfolder      expanded collection sub-folder (string, may contain '/')
+-- @param args.subfolder      expanded text prepended to the path (string, may contain '/')
 -- @param args.folders        mirrored folder components (array, unsanitised)
+-- @param args.append         expanded text appended to the folder path (may contain '/')
 -- @param args.name           expanded file name without extension (may contain '/')
 -- @param args.ext            extension of the rendered file
 function FPCore.buildRelativePath( args )
@@ -409,13 +421,107 @@ function FPCore.buildRelativePath( args )
 	for _, c in ipairs( args.folders or {} ) do
 		folders[ #folders + 1 ] = FPCore.sanitizeComponent( c )
 	end
+	local append = FPCore.sanitizeRelative( args.append )
 	local nameParts = FPCore.sanitizeRelative( args.name )
 	if #nameParts == 0 then
 		nameParts = { 'untitled' }
 	end
 	local ext = args.ext and args.ext ~= '' and ( '.' .. lower( args.ext ) ) or ''
 	nameParts[ #nameParts ] = nameParts[ #nameParts ] .. ext
-	return FPCore.joinRelative( sub, folders, nameParts )
+	return FPCore.joinRelative( sub, folders, append, nameParts )
+end
+
+--------------------------------------------------------------------------------
+-- Layout detection (used when importing services from other plug-ins)
+
+local function sameComponent( a, b )
+	return lower( FPCore.sanitizeComponent( a ) ) == lower( FPCore.sanitizeComponent( b ) )
+end
+
+local function slice( list, from, to )
+	local out = {}
+	for i = from, to do
+		out[ #out + 1 ] = list[i]
+	end
+	return out
+end
+
+--- Lists every collection layout that maps `mirrored` folder components onto
+-- the folder components `actual` of an existing published file.
+-- A layout is { lead =, trail =, prefix = {..}, suffix = {..} } or
+-- { flatten = true, prefix = {..} }.
+function FPCore.layoutCandidates( mirrored, actual )
+	local out = {}
+	for lead = 0, #mirrored do
+		for trail = 0, #mirrored - lead do
+			local core = slice( mirrored, lead + 1, #mirrored - trail )
+			if #core > 0 then
+				for p = 1, #actual - #core + 1 do
+					local ok = true
+					for i = 1, #core do
+						if not sameComponent( core[i], actual[ p + i - 1 ] ) then
+							ok = false
+							break
+						end
+					end
+					if ok then
+						out[ #out + 1 ] = {
+							lead = lead, trail = trail,
+							prefix = slice( actual, 1, p - 1 ),
+							suffix = slice( actual, p + #core, #actual ),
+						}
+					end
+				end
+			end
+		end
+	end
+	out[ #out + 1 ] = { flatten = true, prefix = slice( actual, 1, #actual ) }
+	return out
+end
+
+local function layoutKey( l )
+	if l.flatten then
+		return 'flat|' .. lower( table.concat( l.prefix, '/' ) )
+	end
+	return l.lead .. '|' .. l.trail .. '|' .. lower( table.concat( l.prefix, '/' ) )
+		.. '|' .. lower( table.concat( l.suffix, '/' ) )
+end
+
+local function layoutCost( l )
+	-- Prefer the simplest explanation: no stripping, short prefixes, and
+	-- mirroring over flattening.
+	if l.flatten then
+		return 1000 + #l.prefix
+	end
+	return ( l.lead + l.trail ) * 10 + #l.prefix + #l.suffix
+end
+
+--- Picks the layout that explains the most samples.
+-- @param samples array of { mirrored = {...}, actual = {...} }
+-- @return layout, number of samples it explains (or nil, 0)
+function FPCore.detectLayout( samples )
+	local counts, layouts = {}, {}
+	for _, sample in ipairs( samples ) do
+		local seen = {}
+		for _, l in ipairs( FPCore.layoutCandidates( sample.mirrored, sample.actual ) ) do
+			local key = layoutKey( l )
+			if not seen[ key ] then
+				seen[ key ] = true
+				counts[ key ] = ( counts[ key ] or 0 ) + 1
+				layouts[ key ] = l
+			end
+		end
+	end
+	local best, bestKey
+	for key, l in pairs( layouts ) do
+		if not best
+			or counts[ key ] > counts[ bestKey ]
+			or ( counts[ key ] == counts[ bestKey ] and ( layoutCost( l ) < layoutCost( best )
+				or ( layoutCost( l ) == layoutCost( best ) and key < bestKey ) ) ) then
+			best, bestKey = l, key
+		end
+	end
+	return best, best and counts[ bestKey ] or 0
 end
 
 --- Case-insensitive key for comparing relative paths.

@@ -218,6 +218,58 @@ test( 'buildRelativePath', function()
 		'a_/untitled' )
 end )
 
+test( 'buildRelativePath with append, stripComponents', function()
+	eq( FPCore.buildRelativePath { subfolder = 'pre', folders = { 'a', 'b' }, append = 'post/x', name = 'n', ext = 'jpg' },
+		'pre/a/b/post/x/n.jpg' )
+	eq( FPCore.stripComponents( { 'a', 'b', 'c', 'd' }, 1, 2 ), { 'b' } )
+	eq( FPCore.stripComponents( { 'a', 'b' }, 1, 5 ), {} )
+	eq( FPCore.stripComponents( { 'a' }, 0, 0 ), { 'a' } )
+end )
+
+test( 'detectLayout: plain mirror', function()
+	local l, n = FPCore.detectLayout {
+		{ mirrored = { 'Guilde', '2025 Weekend' }, actual = { 'Guilde', '2025 Weekend' } },
+		{ mirrored = { 'Guilde', 'Other' }, actual = { 'guilde', 'other' } },
+	}
+	eq( n, 2 )
+	eq( { l.lead, l.trail, #l.prefix, #l.suffix }, { 0, 0, 0, 0 } )
+end )
+
+test( 'detectLayout: strip, prepend and append', function()
+	local l, n = FPCore.detectLayout {
+		{ mirrored = { 'Lightroom sync', 'Guilde', 'A', 'raw' }, actual = { 'Web', 'Guilde', 'A', 'small' } },
+		{ mirrored = { 'Lightroom sync', 'Guilde', 'B', 'raw' }, actual = { 'Web', 'Guilde', 'B', 'small' } },
+		{ mirrored = { 'Lightroom sync', 'Other', 'raw' }, actual = { 'Web', 'Other', 'small' } },
+	}
+	eq( n, 3 )
+	eq( { l.lead, l.trail }, { 1, 1 } )
+	eq( l.prefix, { 'Web' } )
+	eq( l.suffix, { 'small' } )
+end )
+
+test( 'detectLayout: flattened collection', function()
+	local l, n = FPCore.detectLayout {
+		{ mirrored = { 'a', 'b' }, actual = { 'Best' } },
+		{ mirrored = { 'c' }, actual = { 'Best' } },
+	}
+	eq( n, 2 )
+	eq( l.flatten, true )
+	eq( l.prefix, { 'Best' } )
+end )
+
+test( 'detectLayout: majority wins over outliers', function()
+	local l, n = FPCore.detectLayout {
+		{ mirrored = { 'a' }, actual = { 'a' } },
+		{ mirrored = { 'b' }, actual = { 'b' } },
+		{ mirrored = { 'c' }, actual = { 'zzz' } },
+	}
+	eq( n, 2 )
+	eq( { l.lead, l.trail, #l.prefix, #l.suffix }, { 0, 0, 0, 0 } )
+	local none, zero = FPCore.detectLayout {}
+	eq( none, nil )
+	eq( zero, 0 )
+end )
+
 test( 'withSuffix', function()
 	eq( FPCore.withSuffix( 'a/b/IMG.jpg', 1 ), 'a/b/IMG.jpg' )
 	eq( FPCore.withSuffix( 'a/b/IMG.jpg', 2 ), 'a/b/IMG-2.jpg' )

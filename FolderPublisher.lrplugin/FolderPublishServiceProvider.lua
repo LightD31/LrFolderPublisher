@@ -54,17 +54,28 @@ end
 function provider.metadataThatTriggersRepublish( publishSettings )
 	local triggers = {}
 	for _, trigger in ipairs( FPSettings.republishTriggers ) do
-		local value = publishSettings and publishSettings[ 'fp_trig_' .. trigger.key ]
-		if value == nil then
-			for _, field in ipairs( FPSettings.exportPresetFields ) do
-				if field.key == 'fp_trig_' .. trigger.key then
-					value = field.default
-				end
-			end
+		local on = FPSettings.get( publishSettings, 'fp_trig_' .. trigger.id ) and true or false
+		for _, key in ipairs( trigger.keys ) do
+			triggers[ key ] = on
 		end
-		triggers[ trigger.key ] = value and true or false
 	end
 	return triggers
+end
+
+-- Deleting photos from the catalog that are published here.
+function provider.shouldDeletePhotosFromServiceOnDeleteFromCatalog( publishSettings, nPhotos )
+	local mode = FPSettings.get( publishSettings, 'fp_onCatalogDelete' )
+	if mode == 'keep' then
+		return 'ignore'
+	elseif mode == 'block' then
+		LrDialogs.message( 'These photos are published with Folder Publisher',
+			'This publish service is set to prevent deleting published photos from the catalog. '
+				.. 'Remove them from the publish service first, or change "When it is deleted from '
+				.. 'the catalog" under Removing Photos in the service settings.',
+			'info' )
+		return 'cancel'
+	end
+	return 'delete'
 end
 
 --------------------------------------------------------------------------------
@@ -73,7 +84,11 @@ end
 function provider.viewForCollectionSettings( f, publishSettings, info )
 	local collectionSettings = assert( info.collectionSettings )
 	FPSettings.applyCollectionDefaults( collectionSettings )
-	return FPDialogs.collectionSettingsView( f, collectionSettings )
+	return FPDialogs.collectionSettingsView( f, publishSettings, info )
+end
+
+function provider.endDialogForCollectionSettings( publishSettings, info )
+	FPDialogs.endCollectionSettings( info )
 end
 
 local function recheckLater( info, overrides )
@@ -131,14 +146,25 @@ function provider.processRenderedPhotos( functionContext, exportContext )
 	local settings = exportContext.propertyTable
 	local catalog = LrApplication.activeCatalog()
 
+	local root = resolveRoot( settings )
+	local topFolders = FPMapping.topFolders( catalog )
+
+	-- Photos whose original is offline are left for a later publish rather
+	-- than being rendered from a (lower quality) Smart Preview.
+	local offline = {}
+	for photo in exportSession:photosToExport() do
+		local path = photo:getRawMetadata( 'path' )
+		if not FPFiles.exists( path ) then
+			offline[ #offline + 1 ] = path
+			exportSession:removePhoto( photo )
+		end
+	end
+
 	local nPhotos = exportSession:countRenditions()
 	local progressScope = exportContext:configureProgress {
 		title = nPhotos > 1 and string.format( 'Publishing %d photos to folder', nPhotos )
 			or 'Publishing one photo to folder',
 	}
-
-	local root = resolveRoot( settings )
-	local topFolders = FPMapping.topFolders( catalog )
 
 	local service = exportContext.publishService
 	local collection = exportContext.publishedCollection
@@ -235,6 +261,15 @@ function provider.processRenderedPhotos( functionContext, exportContext )
 	end
 
 	progressScope:done()
+
+	if #offline > 0 then
+		LrDialogs.message(
+			string.format( '%d photo(s) were not published because their original file is offline', #offline ),
+			table.concat( offline, '\n', 1, math.min( #offline, 10 ) ) .. ( #offline > 10 and '\n…' or '' )
+				.. '\n\nThey stay in "New Photos to Publish" or "Modified Photos to Re-Publish" and will be '
+				.. 'published next time, once the drive is connected.',
+			'info' )
+	end
 end
 
 --------------------------------------------------------------------------------
