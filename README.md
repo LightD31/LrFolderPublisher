@@ -84,10 +84,12 @@ and is not affiliated with its author.
 
 ## Installation
 
-1. Download `FolderPublisher.lrplugin.zip` from the
-   [latest release](https://github.com/LightD31/LrFolderPublisher/releases)
-   (or clone this repository) and unzip it somewhere permanent, for example
+1. Download
+   [FolderPublisher.lrplugin.zip](https://github.com/LightD31/LrFolderPublisher/releases/latest/download/FolderPublisher.lrplugin.zip)
+   from the [latest release](https://github.com/LightD31/LrFolderPublisher/releases/latest)
+   and unzip it somewhere permanent, for example
    `Documents/Lightroom Plugins/FolderPublisher.lrplugin`.
+   To update, quit Lightroom and replace that folder with the new one.
 2. In Lightroom Classic choose *File ▸ Plug-in Manager… ▸ Add* and select the
    `FolderPublisher.lrplugin` folder.
 3. In the Library module's **Publish Services** panel (bottom left), click
@@ -271,8 +273,19 @@ lua5.1 tests/integration.lua
 The stub is not a real Lightroom. Before releasing, go through
 [TESTING.md](TESTING.md) in Lightroom Classic.
 
-To release, push a tag such as `v1.0.0`. GitHub Actions attaches
-`FolderPublisher.lrplugin.zip` to a release.
+### Builds and releases
+
+- `tools/build.sh` builds `dist/FolderPublisher.lrplugin.zip` and prints the
+  version from `Info.lua`.
+- Every push and pull request runs the tests and attaches the built zip to the
+  workflow run (*Actions* tab ▸ the run ▸ *Artifacts*), ready to try.
+- **Releasing is automatic.** To publish a release, bump `VERSION` in
+  `Info.lua` in a pull request and merge it. The *Release* workflow tests and
+  builds `main`. When the version has no `vX.Y.Z` tag yet, it creates the tag
+  and a GitHub release with generated notes and the zip attached. Pushes that
+  don't change the version don't release anything.
+- Pushing a `vX.Y.Z` tag by hand also works, if it matches `Info.lua`.
+  Otherwise the workflow fails.
 
 ## License
 
