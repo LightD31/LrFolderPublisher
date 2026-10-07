@@ -1,0 +1,25 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Lua 5.1
+        run: sudo apt-get update && sudo apt-get install -y lua5.1
+      - name: Test
+        run: lua5.1 tests/run.lua && lua5.1 tests/integration.lua
+      - name: Package
+        run: zip -r FolderPublisher.lrplugin.zip FolderPublisher.lrplugin
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: FolderPublisher.lrplugin.zip
+          generate_release_notes: true
