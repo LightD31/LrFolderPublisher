@@ -32,6 +32,35 @@ local T = FPText.T
 local provider = {}
 
 --------------------------------------------------------------------------------
+-- Diagnostics
+
+-- Runs fn( step, ... ) in protected mode. fn calls step( 'what it does' ) as
+-- it goes. If an error escapes, it is logged with the last step and raised
+-- again for Lightroom to report: errors raised inside Lightroom itself carry
+-- no file or line ("?:0: ..."), so the step is the only clue to where they
+-- came from.
+local function traced( operation, fn, ... )
+	local current = 'starting'
+	local function step( what )
+		current = what
+	end
+	local ok, err = LrTasks.pcall( fn, step, ... )
+	if not ok then
+		if LrErrors.isCanceledError and LrErrors.isCanceledError( err ) then
+			logger:info( operation .. ' canceled while ' .. current )
+		else
+			logger:error( string.format( '%s failed while %s: %s', operation, current, tostring( err ) ) )
+		end
+		error( err, 0 )
+	end
+end
+
+local function lightroomVersion()
+	local ok, version = LrTasks.pcall( LrApplication.versionString )
+	return ok and tostring( version ) or '?'
+end
+
+--------------------------------------------------------------------------------
 -- General service description
 
 provider.supportsIncrementalPublish = 'only'
@@ -92,12 +121,15 @@ end
 -- Per-collection settings
 
 function provider.viewForCollectionSettings( f, publishSettings, info )
+	logger:info( 'Collection settings dialog opened for "' .. tostring( info.name ) .. '"' )
 	local collectionSettings = assert( info.collectionSettings )
 	FPSettings.applyCollectionDefaults( collectionSettings )
 	return FPDialogs.collectionSettingsView( f, publishSettings, info )
 end
 
 function provider.endDialogForCollectionSettings( publishSettings, info )
+	logger:info( string.format( 'Collection settings dialog for "%s" closed (%s)',
+		tostring( info and info.name ), tostring( info and info.why ) ) )
 	FPDialogs.endCollectionSettings( info )
 end
 
@@ -118,10 +150,12 @@ end
 -- When a collection's path settings or name change, mark the photos whose
 -- target path changed so the next publish moves them.
 function provider.updateCollectionSettings( publishSettings, info )
+	logger:info( 'Settings of collection "' .. tostring( info and info.name ) .. '" changed' )
 	recheckLater( info, { settings = info.collectionSettings } )
 end
 
 function provider.renamePublishedCollection( publishSettings, info )
+	logger:info( 'Collection renamed to "' .. tostring( info and info.name ) .. '"' )
 	recheckLater( info, { name = info.name } )
 end
 
@@ -151,45 +185,64 @@ local function resolveRoot( publishSettings )
 	return root
 end
 
-function provider.processRenderedPhotos( functionContext, exportContext )
+local function publishRenderedPhotos( step, exportContext )
 	local exportSession = exportContext.exportSession
 	local settings = exportContext.propertyTable
 	local catalog = LrApplication.activeCatalog()
+	local service = exportContext.publishService
+	local collection = exportContext.publishedCollection
 
+	step( 'reading the service and collection names' )
+	local serviceName = service and service:getName() or ''
+	local collectionName = collection and collection:getName()
+		or ( exportContext.publishedCollectionInfo or {} ).name or '?'
+	logger:info( string.format( 'Publishing "%s" of service "%s" (Lightroom %s)',
+		tostring( collectionName ), tostring( serviceName ), lightroomVersion() ) )
+
+	step( 'checking the publish folder' )
 	local root = resolveRoot( settings )
+	step( 'listing the top-level Lightroom folders' )
 	local topFolders = FPMapping.topFolders( catalog )
 
 	-- Photos whose original is offline are left for a later publish rather
 	-- than being rendered from a (lower quality) Smart Preview.
 	local stats = FPSummary.emptyStats()
+	local nListed = 0
+	step( 'listing the photos to publish' )
 	for photo in exportSession:photosToExport() do
+		nListed = nListed + 1
+		step( 'checking whether the original of photo #' .. nListed .. ' is online' )
 		local path = photo:getRawMetadata( 'path' )
 		if not FPFiles.exists( path ) then
 			stats.offline = stats.offline + 1
 			if #stats.offlinePaths < 10 then
 				stats.offlinePaths[ #stats.offlinePaths + 1 ] = path
 			end
+			step( 'skipping the offline photo ' .. tostring( path ) )
 			exportSession:removePhoto( photo )
 		end
+		step( 'listing the photos to publish' )
 	end
 
+	step( 'counting the photos to render' )
 	local nPhotos = exportSession:countRenditions()
+	logger:info( string.format( '%d photo(s) to publish, %d skipped because their original is offline',
+		nPhotos, stats.offline ) )
+	step( 'setting up the progress bar' )
 	local progressScope = exportContext:configureProgress {
 		title = FPText.count( nPhotos, 'Publish/Progress', 'Publishing one photo to folder',
 			'Publishing ^1 photos to folder' ),
 	}
 
-	local service = exportContext.publishService
-	local collection = exportContext.publishedCollection
+	step( 'reading the collection settings' )
 	local colCtx
 	if collection then
 		colCtx = FPMapping.collectionContext( collection )
 	else
-		local info = exportContext.publishedCollectionInfo or {}
 		logger:warn( 'No published collection in export context; using default collection settings' )
-		colCtx = FPMapping.collectionContext( nil, { name = info.name } )
+		colCtx = FPMapping.collectionContext( nil, { name = collectionName } )
 	end
-	local serviceName = service and service:getName() or ''
+	step( 'reading the files already published by the service' )
 	local claims = service and FPMapping.buildClaims( service ) or {}
 
 	-- "Leave on disk" applies to photos removed from the service; a photo that
@@ -198,8 +251,17 @@ function provider.processRenderedPhotos( functionContext, exportContext )
 	local prune = settings.fp_pruneEmptyFolders ~= false
 	local setCaptureDate = settings.fp_fileDate == 'capture'
 
+	local nRendition = 0
+	step( 'starting to render' )
 	for _, rendition in exportContext:renditions { stopIfCanceled = true } do
+		nRendition = nRendition + 1
 		local photo = rendition.photo
+		local label = 'photo #' .. nRendition
+		step( 'reading the path of ' .. label )
+		local photoPath = tostring( photo:getRawMetadata( 'path' ) )
+		label = label .. ' (' .. photoPath .. ')'
+
+		step( 'waiting for Lightroom to render ' .. label )
 		local ok, pathOrMessage = rendition:waitForRender()
 
 		if progressScope:isCanceled() then
@@ -208,14 +270,19 @@ function provider.processRenderedPhotos( functionContext, exportContext )
 
 		if not ok then
 			stats.failed = stats.failed + 1
+			logger:warn( 'Lightroom could not render ' .. photoPath .. ': ' .. tostring( pathOrMessage ) )
+			step( 'reporting the failed render of ' .. label )
 			rendition:uploadFailed( pathOrMessage )
 		else
+			step( 'publishing ' .. label )
+			local doing = 'computing its target path'
 			local success, err = LrTasks.pcall( function()
 				local ownerId = photo.localIdentifier
 				local stem = FPMapping.targetStem( photo, settings, colCtx, topFolders, pathOrMessage, serviceName )
 				local ext = LrPathUtils.extension( pathOrMessage )
 				local wanted = stem .. ( ext ~= '' and ( '.' .. string.lower( ext ) ) or '' )
 
+				doing = 'reading its previous published path'
 				local previous = rendition.publishedPhotoId
 				if previous and not FPCore.isSafeRelative( previous ) then
 					previous = nil
@@ -223,6 +290,7 @@ function provider.processRenderedPhotos( functionContext, exportContext )
 
 				-- Keep the previous name if it is still the right target (it may
 				-- carry a collision suffix such as "-2").
+				doing = 'choosing a file name'
 				local rel
 				if previous and FPCore.matchesTarget( previous, wanted ) then
 					rel = previous
@@ -230,6 +298,7 @@ function provider.processRenderedPhotos( functionContext, exportContext )
 					rel = FPCore.resolveCollision( wanted, ownerId, claims )
 				end
 
+				doing = 'copying the rendered file to ' .. rel
 				local dest = FPFiles.absolute( root, rel )
 				local placed, placeErr = FPFiles.place( pathOrMessage, dest )
 				if not placed then
@@ -237,12 +306,14 @@ function provider.processRenderedPhotos( functionContext, exportContext )
 				end
 
 				-- Raw originals come with an .xmp sidecar.
+				doing = 'copying its .xmp sidecar'
 				local sidecar = LrPathUtils.replaceExtension( pathOrMessage, 'xmp' )
 				if FPCore.usesXmpSidecar( ext ) and FPFiles.exists( sidecar ) then
 					FPFiles.place( sidecar, LrPathUtils.replaceExtension( dest, 'xmp' ) )
 				end
 
 				if setCaptureDate then
+					doing = 'setting the file date'
 					FPFiles.setFileTime( dest, FPMapping.captureTime( photo ) )
 				end
 
@@ -254,6 +325,7 @@ function provider.processRenderedPhotos( functionContext, exportContext )
 						-- changed): remove the stale copy unless something else
 						-- still uses it.
 						if not FPCore.isClaimed( claims, previous ) then
+							doing = 'removing its previous file ' .. previous
 							local old = FPFiles.absolute( root, previous )
 							FPFiles.removePublished( old, onMove )
 							if prune then
@@ -263,6 +335,7 @@ function provider.processRenderedPhotos( functionContext, exportContext )
 					end
 				end
 
+				doing = 'recording it as published in Lightroom'
 				rendition:recordPublishedPhotoId( rel )
 				rendition:recordPublishedPhotoUrl( FPCore.fileUrl( dest ) )
 
@@ -277,21 +350,31 @@ function provider.processRenderedPhotos( functionContext, exportContext )
 
 			if not success then
 				stats.failed = stats.failed + 1
-				logger:error( 'Publishing ' .. tostring( photo:getRawMetadata( 'path' ) ) .. ' failed: ' .. tostring( err ) )
+				logger:error( 'Publishing ' .. photoPath .. ' failed while ' .. doing .. ': ' .. tostring( err ) )
+				step( 'reporting the failed publish of ' .. label )
 				rendition:uploadFailed( tostring( err ) )
 			end
 		end
+		step( 'getting the next photo from Lightroom (after ' .. label .. ')' )
 	end
 
+	step( 'closing the progress bar' )
 	progressScope:done()
 
+	logger:info( string.format( 'Finished "%s": %d new, %d updated, %d moved, %d failed, %d offline',
+		tostring( colCtx.name ), stats.new, stats.updated, stats.moved, stats.failed, stats.offline ) )
+	step( 'showing the summary' )
 	FPSummary.publishFinished( colCtx.name, stats, FPSettings.get( settings, 'fp_showSummary' ) )
+end
+
+function provider.processRenderedPhotos( functionContext, exportContext )
+	traced( 'Publishing', publishRenderedPhotos, exportContext )
 end
 
 --------------------------------------------------------------------------------
 -- Removing photos
 
-local function removeRemoteIds( publishSettings, remoteIds, refs, removedCallback, progress )
+local function removeRemoteIds( step, publishSettings, remoteIds, refs, removedCallback, progress )
 	local root = FPFiles.expandRoot( publishSettings.fp_root )
 	local mode = publishSettings.fp_onRemove or 'delete'
 	local prune = publishSettings.fp_pruneEmptyFolders ~= false
@@ -301,6 +384,7 @@ local function removeRemoteIds( publishSettings, remoteIds, refs, removedCallbac
 
 	for i, remoteId in ipairs( remoteIds ) do
 		local removed = true
+		step( 'removing the file of ' .. tostring( remoteId ) )
 		if mode ~= 'keep' and root ~= '' and FPCore.isSafeRelative( remoteId )
 			and not refs[ FPCore.pathKey( remoteId ) ] then
 			local path = FPFiles.absolute( root, remoteId )
@@ -313,6 +397,7 @@ local function removeRemoteIds( publishSettings, remoteIds, refs, removedCallbac
 			end
 		end
 		if removed and removedCallback then
+			step( 'telling Lightroom that ' .. tostring( remoteId ) .. ' was removed' )
 			removedCallback( remoteId )
 		end
 		if progress then
@@ -320,6 +405,7 @@ local function removeRemoteIds( publishSettings, remoteIds, refs, removedCallbac
 		end
 	end
 
+	step( 'removing empty folders' )
 	if prune and mode ~= 'keep' then
 		for dir in pairs( dirs ) do
 			FPFiles.pruneEmptyFolders( dir, root )
@@ -327,8 +413,10 @@ local function removeRemoteIds( publishSettings, remoteIds, refs, removedCallbac
 	end
 
 	FPSummary.recordRemoved( nRemoved )
+	logger:info( string.format( '%d file(s) removed, %d could not be removed', nRemoved, #failures ) )
 
 	if #failures > 0 then
+		step( 'showing the files that could not be removed' )
 		local list = table.concat( failures, '\n', 1, math.min( #failures, 10 ) )
 		LrDialogs.message( T( 'Remove/FailedTitle', 'Some published files could not be removed' ),
 			list .. ( #failures > 10 and '\n…' or '' ) .. '\n\n'
@@ -339,9 +427,12 @@ local function removeRemoteIds( publishSettings, remoteIds, refs, removedCallbac
 	end
 end
 
-function provider.deletePhotosFromPublishedCollection( publishSettings, arrayOfPhotoIds, deletedCallback, localCollectionId )
+local function deletePhotos( step, publishSettings, arrayOfPhotoIds, deletedCallback, localCollectionId )
+	logger:info( string.format( 'Removing %d photo(s) from collection %s (Lightroom %s)',
+		#arrayOfPhotoIds, tostring( localCollectionId ), lightroomVersion() ) )
 	local refs = {}
 	if publishSettings.fp_onRemove ~= 'keep' then
+		step( 'looking for files shared with other collections' )
 		local ok, result = LrTasks.pcall( function()
 			local catalog = LrApplication.activeCatalog()
 			local collection = catalog:getPublishedCollectionByLocalIdentifier( localCollectionId )
@@ -354,7 +445,11 @@ function provider.deletePhotosFromPublishedCollection( publishSettings, arrayOfP
 			logger:warn( 'Could not check for shared files: ' .. tostring( result ) )
 		end
 	end
-	removeRemoteIds( publishSettings, arrayOfPhotoIds, refs, deletedCallback )
+	removeRemoteIds( step, publishSettings, arrayOfPhotoIds, refs, deletedCallback )
+end
+
+function provider.deletePhotosFromPublishedCollection( publishSettings, arrayOfPhotoIds, deletedCallback, localCollectionId )
+	traced( 'Removing photos', deletePhotos, publishSettings, arrayOfPhotoIds, deletedCallback, localCollectionId )
 end
 
 function provider.deletePublishedCollection( publishSettings, info )
@@ -362,25 +457,29 @@ function provider.deletePublishedCollection( publishSettings, info )
 		return
 	end
 	LrFunctionContext.callWithContext( 'FolderPublisher.deletePublishedCollection', function( context )
-		local progress = LrDialogs.showModalProgressDialog {
-			title = T( 'Remove/Progress', 'Removing published files of "^1"', tostring( info.name ) ),
-			functionContext = context,
-		}
-		-- Files still used by another collection of the service are kept. If
-		-- Lightroom doesn't tell us which collection is going away, its own
-		-- entries count as references too, so nothing is deleted: the
-		-- "Clean Up Orphaned Files" command can remove those files later.
-		local refs = {}
-		local collection = info.publishedCollection
-		local service = info.publishService or ( collection and collection:getService() )
-		if service then
-			local ok, result = LrTasks.pcall( FPMapping.collectReferences, service,
-				collection and collection.localIdentifier )
-			if ok then
-				refs = result
+		traced( 'Deleting collection "' .. tostring( info.name ) .. '"', function( step )
+			step( 'opening the progress dialog' )
+			local progress = LrDialogs.showModalProgressDialog {
+				title = T( 'Remove/Progress', 'Removing published files of "^1"', tostring( info.name ) ),
+				functionContext = context,
+			}
+			-- Files still used by another collection of the service are kept. If
+			-- Lightroom doesn't tell us which collection is going away, its own
+			-- entries count as references too, so nothing is deleted: the
+			-- "Clean Up Orphaned Files" command can remove those files later.
+			step( 'looking for files shared with other collections' )
+			local refs = {}
+			local collection = info.publishedCollection
+			local service = info.publishService or ( collection and collection:getService() )
+			if service then
+				local ok, result = LrTasks.pcall( FPMapping.collectReferences, service,
+					collection and collection.localIdentifier )
+				if ok then
+					refs = result
+				end
 			end
-		end
-		removeRemoteIds( publishSettings, info.photoIds, refs, nil, progress )
+			removeRemoteIds( step, publishSettings, info.photoIds, refs, nil, progress )
+		end )
 	end )
 end
 

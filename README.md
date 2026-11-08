@@ -231,7 +231,10 @@ python3 tools/i18n.py template de    # skeleton for a new language
 ## Troubleshooting
 
 - Logs are written to `FolderPublisher.log` in Lightroom's log folder
-  (`Documents/LrClassicLogs`).
+  (`Documents/LrClassicLogs`). Each publish logs its start, its counts and,
+  when it fails, what the plug-in was doing at that moment. This matters for
+  errors raised inside Lightroom itself (they start with `?:0:` and carry no
+  file name): include the end of the log when you report one.
 - Photos that keep landing in *Modified Photos to Re-Publish* for no visible
   reason is a long-standing Lightroom behaviour, mostly with smart
   collections. The plug-in can't influence it.

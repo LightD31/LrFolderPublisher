@@ -171,9 +171,13 @@ local LrShell = {
 	revealInShell = function( p ) stub.revealed[ #stub.revealed + 1 ] = p end,
 }
 
+stub.logs = {}
 local logger = {}
 for _, level in ipairs { 'enable', 'trace', 'info', 'warn', 'error', 'debug' } do
 	logger[ level ] = function( self, msg )
+		if level ~= 'enable' then
+			stub.logs[ #stub.logs + 1 ] = level .. ': ' .. tostring( msg )
+		end
 		if level == 'error' and stub.verbose then
 			print( 'LOG ERROR: ' .. tostring( msg ) )
 		end
@@ -573,6 +577,7 @@ end
 --- Simulates Lightroom rendering `photos` into a temp folder and calling
 -- processRenderedPhotos for `collection`.
 -- opts.ext: rendered extension (default 'jpg'); opts.sidecar: also write .xmp
+-- opts.renderError: waitForRender raises this error, as Lightroom code would
 function stub.publish( provider, service, collection, photos, opts )
 	opts = opts or {}
 	run( 'mkdir -p ' .. shq( stub.temp ) )
@@ -595,7 +600,12 @@ function stub.publish( provider, service, collection, photos, opts )
 			x:close()
 		end
 		local r = { photo = photo, publishedPhotoId = entry.remoteId }
-		function r:waitForRender() return true, rendered end
+		function r:waitForRender()
+			if opts.renderError then
+				error( opts.renderError, 0 )
+			end
+			return true, rendered
+		end
 		function r:recordPublishedPhotoId( id ) entry.remoteId = id; entry.edited = false end
 		function r:recordPublishedPhotoUrl( url ) entry.url = url end
 		function r:uploadFailed( msg ) stub.failures[ #stub.failures + 1 ] = msg end
