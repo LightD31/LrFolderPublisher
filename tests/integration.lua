@@ -467,6 +467,20 @@ test( 'offline originals are skipped, not rendered', function()
 	eq( stub.messages[1].kind, 'warning' )
 end )
 
+test( 'errors raised by Lightroom are logged with the step, then passed on', function()
+	local service, cols = setup()
+	local a = stub.newPhoto( 1, LIB .. '/a.CR3' )
+	stub.logs = {}
+	local ok, err = pcall( stub.publish, provider, service, cols[1], { a },
+		{ renderError = '?:0: attempt to compare two nil values' } )
+	check( not ok, 'the error reaches Lightroom' )
+	eq( err, '?:0: attempt to compare two nil values' )
+	local logged = table.concat( stub.logs, '\n' )
+	check( logged:find( 'error: Publishing failed while waiting for Lightroom to render photo #1 ('
+		.. a.raw.path .. '): ?:0: attempt to compare two nil values', 1, true ), logged )
+	check( logged:find( 'info: Publishing "', 1, true ), 'start of the publish is logged' )
+end )
+
 test( 'publish summary', function()
 	local service, cols = setup { fp_showSummary = 'always' }
 	local a = stub.newPhoto( 1, LIB .. '/a.CR3' )
